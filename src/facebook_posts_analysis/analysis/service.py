@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import polars as pl
@@ -192,9 +192,8 @@ class AnalysisService:
 
     def _persist_table(self, table_name: str, records: list[dict[str, Any]]) -> Path:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        new_df = pl.DataFrame(records, schema=self.ANALYSIS_SCHEMAS[table_name]) if records else pl.DataFrame(
-            schema=self.ANALYSIS_SCHEMAS[table_name]
-        )
+        schema = cast(dict[str, Any], self.ANALYSIS_SCHEMAS[table_name])
+        new_df = pl.DataFrame(records, schema=schema) if records else pl.DataFrame(schema=schema)
         if path.exists():
             existing_df = pl.read_parquet(path)
             if new_df.is_empty():

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -67,6 +66,8 @@ class OpenAICompatibleEmbeddingProvider:
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.config.dimension))
+        assert self.config.base_url is not None
+        assert self.config.api_key is not None
         response = self.client.post(
             _join_api_url(self.config.base_url, "/embeddings"),
             headers={"Authorization": f"Bearer {self.config.api_key}"},
@@ -173,6 +174,8 @@ class OpenAICompatibleLLMProvider:
         return {"label": payload.get("label", "unclear"), "confidence": confidence}
 
     def _chat_json(self, messages: list[dict[str, str]], fallback: dict[str, Any]) -> dict[str, Any]:
+        assert self.config.base_url is not None
+        assert self.config.api_key is not None
         response = self.client.post(
             _join_api_url(self.config.base_url, "/chat/completions"),
             headers={"Authorization": f"Bearer {self.config.api_key}"},

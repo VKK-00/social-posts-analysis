@@ -372,22 +372,36 @@ class PublicWebCollector(BaseCollector):
     ) -> PostSnapshot:
         detail_url = self._with_locale(candidate.get("detail_url") or candidate["permalink"])
         target_comment_count = int(candidate.get("comments_count") or 0)
-        payload, detail_html = self._collect_post_payload(
-            context=context,
-            detail_url=detail_url,
-            target_comment_count=target_comment_count,
-            aggressive=False,
-        )
-        if self._should_retry_post_detail(payload, target_comment_count):
-            retry_payload, retry_html = self._collect_post_payload(
+        attempts = [
+            {"aggressive": False, "comment_limit": self._comment_article_limit(target_comment_count, aggressive=False)},
+            {"aggressive": True, "comment_limit": self._comment_article_limit(target_comment_count, aggressive=True)},
+        ]
+        if target_comment_count >= 40:
+            attempts.append(
+                {"aggressive": True, "comment_limit": self._comment_article_limit(target_comment_count + 80, aggressive=True)}
+            )
+
+        best_payload: dict[str, Any] | None = None
+        best_detail_html = ""
+        best_extracted_count = -1
+        for attempt in attempts:
+            current_payload, current_html = self._collect_post_payload(
                 context=context,
                 detail_url=detail_url,
                 target_comment_count=target_comment_count,
-                aggressive=True,
+                aggressive=bool(attempt["aggressive"]),
+                comment_limit=int(attempt["comment_limit"]),
             )
-            if self._count_meaningful_payload_comments(retry_payload) > self._count_meaningful_payload_comments(payload):
-                payload = retry_payload
-                detail_html = retry_html
+            current_extracted_count = self._count_meaningful_payload_comments(current_payload)
+            if current_extracted_count > best_extracted_count:
+                best_payload = current_payload
+                best_detail_html = current_html
+                best_extracted_count = current_extracted_count
+            if not self._should_retry_post_detail(current_payload, target_comment_count):
+                break
+
+        payload = best_payload or {}
+        detail_html = best_detail_html
 
         published_hint = (
             payload.get("published_hint")
@@ -457,6 +471,7 @@ class PublicWebCollector(BaseCollector):
         detail_url: str,
         target_comment_count: int,
         aggressive: bool,
+        comment_limit: int,
     ) -> tuple[dict[str, Any], str]:
         detail_page = context.new_page()
         try:
@@ -471,7 +486,7 @@ class PublicWebCollector(BaseCollector):
                 target_comment_count=target_comment_count,
                 aggressive=aggressive,
             )
-            payload = self._extract_post_page(detail_page)
+            payload = self._extract_post_page(detail_page, comment_limit=comment_limit)
             detail_html = detail_page.content()
             return payload, detail_html
         finally:
@@ -492,7 +507,7 @@ class PublicWebCollector(BaseCollector):
             published_hint = payload_comment.get("published_hint") or self._derive_comment_published_hint(raw_comment_text)
             comment_text = self._clean_comment_text(
                 raw_comment_text,
-                author_name,
+                author_name or "",
                 published_hint,
             )
             if len(comment_text) < 3:
@@ -548,14 +563,14 @@ class PublicWebCollector(BaseCollector):
             )
         self._click_buttonish_text(
             page,
-            patterns=[r"\bMost relevant\b", r"\bTop comments\b", r"\bNewest\b"],
+            patterns=self._comment_sort_menu_patterns(),
             max_clicks=1,
             wait_ms=1000,
         )
         self._click_buttonish_text(
             page,
-            patterns=[r"\bAll comments\b", r"\bNewest\b"],
-            max_clicks=1,
+            patterns=self._comment_sort_option_patterns(aggressive=aggressive),
+            max_clicks=2 if aggressive else 1,
             wait_ms=2500,
         )
         self._expand_comment_threads(page, target_comment_count=target_comment_count, aggressive=aggressive)
@@ -563,32 +578,23 @@ class PublicWebCollector(BaseCollector):
     def _expand_comment_threads(self, page: Any, *, target_comment_count: int = 0, aggressive: bool = False) -> None:
         last_article_count = self._count_article_nodes(page)
         stable_rounds = 0
-        max_rounds = 14 + min(target_comment_count // 25, 8)
+        max_rounds = 16 + min(target_comment_count // 20, 10)
         if aggressive:
-            max_rounds += 8
+            max_rounds += 12
         for _ in range(max_rounds):
             page.mouse.wheel(0, 1800)
             scrolled = self._scroll_primary_comment_container(page)
             page.wait_for_timeout(1200)
             more_clicked = self._click_buttonish_text(
                 page,
-                patterns=[
-                    r"\bView more comments\b",
-                    r"\bSee more comments\b",
-                    r"\bMore comments\b",
-                    r"\bView previous comments\b",
-                ],
-                max_clicks=4 if aggressive else 2,
+                patterns=self._comment_expansion_patterns(),
+                max_clicks=6 if aggressive else 3,
                 wait_ms=1200,
             )
             reply_clicked = self._click_buttonish_text(
                 page,
-                patterns=[
-                    r"\bView replies\b",
-                    r"\bView more replies\b",
-                    r"\b\d+\s+Replies?\b",
-                ],
-                max_clicks=14 if aggressive else 8,
+                patterns=self._reply_expansion_patterns(),
+                max_clicks=18 if aggressive else 10,
                 wait_ms=900,
             )
             if reply_clicked:
@@ -609,7 +615,11 @@ class PublicWebCollector(BaseCollector):
             else:
                 stable_rounds = 0
             last_article_count = max(last_article_count, article_count)
-            enough_comments = article_count >= min(max(target_comment_count, 0) + 1, 160) if target_comment_count else False
+            enough_comments = (
+                article_count >= min(max(target_comment_count, 0) + 1, self._comment_article_limit(target_comment_count, aggressive))
+                if target_comment_count
+                else False
+            )
             if enough_comments or stable_rounds >= (3 if aggressive else 2):
                 break
 
@@ -629,10 +639,73 @@ class PublicWebCollector(BaseCollector):
             raw_comment_text = comment.get("text") or ""
             author_name = self._select_comment_author(comment.get("author_name"), raw_comment_text)
             published_hint = comment.get("published_hint") or self._derive_comment_published_hint(raw_comment_text)
-            comment_text = self._clean_comment_text(raw_comment_text, author_name, published_hint)
+            comment_text = self._clean_comment_text(raw_comment_text, author_name or "", published_hint)
             if len(comment_text) >= 3:
                 count += 1
         return count
+
+    @staticmethod
+    def _comment_article_limit(target_comment_count: int, aggressive: bool) -> int:
+        base_limit = 220
+        if aggressive:
+            base_limit = 320
+        if target_comment_count >= 80:
+            return max(base_limit, 420 if aggressive else 280)
+        if target_comment_count >= 30:
+            return max(base_limit, 280 if aggressive else 240)
+        return base_limit
+
+    @staticmethod
+    def _comment_sort_menu_patterns() -> list[str]:
+        return [
+            r"\bMost relevant\b",
+            r"\bTop comments\b",
+            r"\bNewest\b",
+            r"\bMost recent\b",
+            r"\u041d\u0430\u0439\u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0456\u0448\u0456\b",
+            r"\u041d\u0430\u0439\u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u044b\u0435\b",
+        ]
+
+    @staticmethod
+    def _comment_sort_option_patterns(*, aggressive: bool) -> list[str]:
+        patterns = [
+            r"\bAll comments\b",
+            r"\bNewest\b",
+            r"\bMost recent\b",
+            r"\u0423\u0441\u0456 \u043a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456\b",
+            r"\u0412\u0441\u0435 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438\b",
+        ]
+        if aggressive:
+            patterns.append(r"\bMost relevant\b")
+        return patterns
+
+    @staticmethod
+    def _comment_expansion_patterns() -> list[str]:
+        return [
+            r"\bView more comments\b",
+            r"\bSee more comments\b",
+            r"\bMore comments\b",
+            r"\bView previous comments\b",
+            r"\bSee previous comments\b",
+            r"\bShow more comments\b",
+            r"\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u0438 \u0431\u0456\u043b\u044c\u0448\u0435 \u043a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456\u0432\b",
+            r"\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0431\u043e\u043b\u044c\u0448\u0435 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0435\u0432\b",
+        ]
+
+    @staticmethod
+    def _reply_expansion_patterns() -> list[str]:
+        return [
+            r"\bView replies\b",
+            r"\bView more replies\b",
+            r"\bSee more replies\b",
+            r"\bView previous replies\b",
+            r"\bSee previous replies\b",
+            r"\bShow replies\b",
+            r"\b\d+\s+Replies?\b",
+            r"\b\d+\s+Reply\b",
+            r"\u0412\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u0456\b",
+            r"\u041e\u0442\u0432\u0435\u0442\u044b\b",
+        ]
 
     @staticmethod
     def _accept_desktop_cookies(page: Any) -> None:
@@ -889,9 +962,9 @@ class PublicWebCollector(BaseCollector):
         return page.evaluate(script)
 
     @staticmethod
-    def _extract_post_page(page: Any) -> dict[str, Any]:
+    def _extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
         script = """
-        () => {
+        (commentLimit) => {
           const articles = Array.from(document.querySelectorAll('div[role="article"], article'));
           const firstArticle = articles[0] || null;
           const timestampNode = firstArticle?.querySelector('abbr[data-utime], span.timestampContent');
@@ -920,6 +993,14 @@ class PublicWebCollector(BaseCollector):
               nesting_x: Math.round(rect.x),
             };
           };
+          const comments = articles
+            .slice(1)
+            .map(getComment)
+            .filter((comment) => {
+              const text = (comment.text || '').trim();
+              return text && (comment.author_name || comment.permalink || comment.published_hint);
+            })
+            .slice(0, commentLimit);
           return {
             post_text: firstArticle?.innerText || '',
             post_permalink: permalinkNode?.href || getMeta('og:url') || window.location.href,
@@ -928,11 +1009,11 @@ class PublicWebCollector(BaseCollector):
             body_text: (document.body?.innerText || '').trim(),
             meta_title: getMeta('og:title'),
             meta_description: getMeta('og:description'),
-            comments: articles.slice(1, 200).map(getComment)
+            comments,
           };
         }
         """
-        return page.evaluate(script)
+        return page.evaluate(script, comment_limit)
 
     def _collect_mobile_timeline_posts(
         self,
@@ -1119,7 +1200,11 @@ class PublicWebCollector(BaseCollector):
             update={
                 "created_at": existing.created_at or incoming.created_at,
                 "permalink": existing.permalink or incoming.permalink,
-                "message": incoming.message if len(incoming.message) > len(existing.message) else existing.message,
+                "message": (
+                    incoming.message
+                    if len(incoming.message or "") > len(existing.message or "")
+                    else existing.message
+                ),
                 "reactions": max(existing.reactions, incoming.reactions),
                 "shares": max(existing.shares, incoming.shares),
                 "comments_count": max(existing.comments_count, incoming.comments_count, len(merged_comments)),

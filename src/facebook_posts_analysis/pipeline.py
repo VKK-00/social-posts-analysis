@@ -62,7 +62,7 @@ class CollectionService:
 
     def _build_collectors(self) -> list[BaseCollector]:
         mode = self.config.collector.mode
-        collector_classes: list[type[BaseCollector]]
+        collector_classes: list[type[Any]]
         if mode == "api":
             collector_classes = [MetaApiCollector]
         elif mode == "web":

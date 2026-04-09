@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import duckdb
 import polars as pl
@@ -256,7 +256,9 @@ class NormalizationService:
         if len(manifests) > 1:
             warnings.append(f"Merged normalized snapshot from {len(manifests)} collection runs.")
 
-        status = "partial" if warnings or any(manifest.status != "success" for manifest in manifests) else "success"
+        status: Literal["success", "partial", "failed"] = (
+            "partial" if warnings or any(manifest.status != "success" for manifest in manifests) else "success"
+        )
         posts = sorted(
             merged_posts.values(),
             key=lambda post: (post.created_at or "", post.post_id),
@@ -365,9 +367,8 @@ class NormalizationService:
 
     def _persist_table(self, table_name: str, records: list[dict[str, Any]]) -> Path:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        new_df = pl.DataFrame(records, schema=self.TABLE_SCHEMAS[table_name]) if records else pl.DataFrame(
-            schema=self.TABLE_SCHEMAS[table_name]
-        )
+        schema = cast(dict[str, Any], self.TABLE_SCHEMAS[table_name])
+        new_df = pl.DataFrame(records, schema=schema) if records else pl.DataFrame(schema=schema)
         if path.exists():
             existing_df = pl.read_parquet(path)
             if new_df.is_empty():

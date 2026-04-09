@@ -6,7 +6,7 @@ from typing import Optional
 import typer
 
 from .analysis.service import AnalysisService
-from .config import load_config
+from .config import ProjectConfig, load_config
 from .normalize import NormalizationService
 from .paths import ProjectPaths
 from .pipeline import CollectionService, PipelineRunner
@@ -15,7 +15,7 @@ from .reporting.service import ReportService, ReviewExportService
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
 
-def _load_project(config_path: Path) -> tuple[Path, ProjectPaths, object]:
+def _load_project(config_path: Path) -> tuple[Path, ProjectPaths, ProjectConfig]:
     root = config_path.resolve().parent.parent if config_path.parent.name == "config" else config_path.resolve().parent
     config = load_config(config_path)
     paths = ProjectPaths.from_config(root, config)
@@ -76,6 +76,17 @@ def report(
     service = ReportService(config=config, paths=paths)
     outputs = service.run(run_id=run_id)
     typer.echo(f"Report files written: {', '.join(str(path) for path in outputs)}")
+
+
+@app.command("export-tables")
+def export_tables(
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    _, paths, config = _load_project(config_path)
+    service = ReportService(config=config, paths=paths)
+    outputs = service.run_tabular(run_id=run_id)
+    typer.echo(f"Tabular exports written: {', '.join(str(path) for path in outputs)}")
 
 
 @app.command("run-all")

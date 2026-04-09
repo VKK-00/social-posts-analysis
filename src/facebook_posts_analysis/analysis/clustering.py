@@ -15,21 +15,24 @@ STOPWORDS = {
     "with",
     "this",
     "from",
-    "для",
-    "это",
-    "как",
-    "что",
-    "але",
-    "про",
-    "для",
-    "если",
+    "\u0434\u043b\u044f",
+    "\u044d\u0442\u043e",
+    "\u043a\u0430\u043a",
+    "\u0447\u0442\u043e",
+    "\u0430\u043b\u0435",
+    "\u043f\u0440\u043e",
+    "\u0435\u0441\u043b\u0438",
     "they",
     "have",
 }
 
 
 def _tokenize(text: str) -> list[str]:
-    return [token for token in re.findall(r"[\w']+", text.lower()) if len(token) > 2 and token not in STOPWORDS]
+    return [
+        token
+        for token in re.findall(r"[\w']+", text.lower())
+        if len(token) > 2 and token not in STOPWORDS
+    ]
 
 
 class NarrativeClusterer:
@@ -70,7 +73,8 @@ class NarrativeClusterer:
         summaries: list[dict[str, Any]] = []
         for cluster_id, members in grouped.items():
             keywords = self._keywords(members)
-            exemplars = [item["item_id"] for item in sorted(members, key=lambda entry: len(entry["text"]), reverse=True)[: self.exemplar_count]]
+            sorted_members = sorted(members, key=lambda entry: len(entry["text"]), reverse=True)
+            exemplars = [item["item_id"] for item in sorted_members[: self.exemplar_count]]
             llm_summary = self.llm_provider.summarize_cluster(
                 item_type=item_type,
                 keywords=keywords,
@@ -114,4 +118,3 @@ class NarrativeClusterer:
         for member in members:
             counter.update(_tokenize(member["text"]))
         return [token for token, _ in counter.most_common(8)]
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import polars as pl
+from openpyxl import load_workbook
 
 from facebook_posts_analysis.analysis.service import AnalysisService
 from facebook_posts_analysis.normalize import NormalizationService
@@ -41,3 +42,20 @@ def test_report_service_applies_manual_overrides(project_config, project_paths) 
     assert side_row["oppose_count"] >= 1
     if context["comment_clusters"]:
         assert any(cluster["label"] == "Renamed narrative" for cluster in context["comment_clusters"])
+
+
+def test_report_service_writes_tabular_exports(project_config, project_paths) -> None:
+    NormalizationService(project_config, project_paths).run(run_id="20260402T120000Z")
+    AnalysisService(project_config, project_paths).run(run_id="20260402T120000Z")
+
+    outputs = ReportService(project_config, project_paths).run(run_id="20260402T120000Z")
+
+    workbook_path = project_paths.reports_root / "report_20260402T120000Z.xlsx"
+    export_root = project_paths.reports_root / "report_20260402T120000Z_tables"
+    assert workbook_path in outputs
+    assert (export_root / "per_side_support.csv").exists()
+    assert (export_root / "per_post_overview.csv").exists()
+
+    workbook = load_workbook(workbook_path)
+    assert "per_side_support" in workbook.sheetnames
+    assert "per_post_overview" in workbook.sheetnames

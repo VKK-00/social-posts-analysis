@@ -168,7 +168,7 @@ class MetaApiCollector(BaseCollector):
 
     def _iter_feed_pages(self, page_id: str, raw_store: RawSnapshotStore) -> list[dict[str, Any]]:
         endpoint = f"/{page_id}/feed"
-        params: dict[str, Any] | None = {
+        params: dict[str, Any] = {
             "fields": (
                 "id,message,created_time,permalink_url,from,"
                 "shares,reactions.limit(0).summary(true),"
@@ -184,17 +184,18 @@ class MetaApiCollector(BaseCollector):
             params["until"] = self.config.date_range.end
 
         pages: list[dict[str, Any]] = []
+        current_params: dict[str, Any] | None = params
         next_url: str | None = None
         page_number = 0
         while True:
             page_number += 1
-            payload = self._get_json(endpoint, params=params, full_url=next_url)
+            payload = self._get_json(endpoint, params=current_params, full_url=next_url)
             raw_store.write_json("api_feed_pages", f"feed-page-{page_number}", payload)
             pages.append(payload)
             next_url = (payload.get("paging") or {}).get("next")
             if not next_url:
                 break
-            params = None
+            current_params = None
         return pages
 
     def _iter_comment_pages(
@@ -204,17 +205,18 @@ class MetaApiCollector(BaseCollector):
         depth: int,
     ) -> list[dict[str, Any]]:
         endpoint = f"/{parent_id}/comments"
-        params: dict[str, Any] | None = {
+        params: dict[str, Any] = {
             "fields": "id,message,created_time,from,permalink_url,comment_count,like_count",
             "limit": self.settings.page_size,
             "access_token": self.settings.access_token,
         }
         pages: list[dict[str, Any]] = []
+        current_params: dict[str, Any] | None = params
         next_url: str | None = None
         page_number = 0
         while True:
             page_number += 1
-            payload = self._get_json(endpoint, params=params, full_url=next_url)
+            payload = self._get_json(endpoint, params=current_params, full_url=next_url)
             raw_store.write_json(
                 "api_comment_pages",
                 f"{slugify(parent_id)}-depth-{depth}-page-{page_number}",
@@ -224,7 +226,7 @@ class MetaApiCollector(BaseCollector):
             next_url = (payload.get("paging") or {}).get("next")
             if not next_url:
                 break
-            params = None
+            current_params = None
         return pages
 
     @retry(

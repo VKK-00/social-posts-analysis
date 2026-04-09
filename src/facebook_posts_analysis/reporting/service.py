@@ -7,12 +7,12 @@ from typing import Any
 import markdown
 import polars as pl
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from openpyxl import Workbook
 
+from facebook_posts_analysis.analysis.metrics import compute_support_metrics
 from facebook_posts_analysis.config import ProjectConfig
 from facebook_posts_analysis.paths import ProjectPaths
 from facebook_posts_analysis.utils import read_json
-
-from facebook_posts_analysis.analysis.metrics import compute_support_metrics
 
 
 class ReviewExportService:
@@ -118,7 +118,15 @@ class ReportService:
         html_path = self.paths.reports_root / f"report_{resolved_run_id}.html"
         markdown_path.write_text(markdown_text, encoding="utf-8")
         html_path.write_text(html_text, encoding="utf-8")
-        return [markdown_path, html_path]
+        tabular_paths = self._write_tabular_exports(resolved_run_id, context["export_tables"])
+        return [markdown_path, html_path, *tabular_paths]
+
+    def run_tabular(self, run_id: str | None = None) -> list[Path]:
+        resolved_run_id = run_id or self.paths.latest_run_id()
+        if not resolved_run_id:
+            raise RuntimeError("No analysis run available for tabular export.")
+        context = self._build_context(resolved_run_id)
+        return self._write_tabular_exports(resolved_run_id, context["export_tables"])
 
     def _build_context(self, run_id: str) -> dict[str, Any]:
         posts = self._load_table("posts").filter(pl.col("run_id") == run_id)
@@ -188,6 +196,7 @@ class ReportService:
 
         conflict_rows = self._high_conflict_threads(stance_labels, comments, posts_lookup)
         coverage_gaps = self._coverage_gaps(posts, comments)
+        post_overview = self._post_overview(posts, comments)
         top_supportive_comments = self._top_comments_by_stance(
             stance_labels=stance_labels,
             comments=comments,
@@ -210,6 +219,17 @@ class ReportService:
             else:
                 source_run_ids = list(raw_source_run_ids or [])
         source_run_count = int(collection_runs["source_run_count"][0]) if collection_runs.height and "source_run_count" in collection_runs.columns else 1
+        export_tables = {
+            "per_side_support": self._rows_to_frame(global_support),
+            "per_post_overview": post_overview,
+            "per_thread_conflict": self._rows_to_frame(conflict_rows),
+            "post_narratives": self._sanitize_export_frame(self._rows_to_frame(post_cluster_rows)),
+            "comment_narratives": self._sanitize_export_frame(self._rows_to_frame(comment_cluster_rows)),
+            "language_mix": self._rows_to_frame(language_mix),
+            "top_supportive_comments": self._rows_to_frame(top_supportive_comments),
+            "top_critical_comments": self._rows_to_frame(top_critical_comments),
+            "coverage_gaps": self._rows_to_frame(coverage_gaps),
+        }
         return {
             "title": f"Narrative analysis report: {page_name}",
             "run_id": run_id,
@@ -230,6 +250,7 @@ class ReportService:
             "top_critical_comments": top_critical_comments,
             "reply_depth_summary": reply_depth_summary,
             "warnings": warnings,
+            "export_tables": export_tables,
         }
 
     def _apply_narrative_overrides(
@@ -393,6 +414,32 @@ class ReportService:
             row["post_excerpt"] = (row.get("message") or "")[:220]
         return rows
 
+    def _post_overview(self, posts: pl.DataFrame, comments: pl.DataFrame) -> pl.DataFrame:
+        if posts.is_empty():
+            return pl.DataFrame()
+        extracted_counts = (
+            comments.group_by("parent_post_id").agg(pl.len().alias("extracted_comment_count"))
+            if not comments.is_empty()
+            else pl.DataFrame(schema={"parent_post_id": pl.String, "extracted_comment_count": pl.Int64})
+        )
+        return (
+            posts.select(
+                "post_id",
+                "created_at",
+                "permalink",
+                "reactions",
+                "shares",
+                "comments_count",
+                pl.col("message").fill_null("").str.slice(0, 220).alias("post_excerpt"),
+            )
+            .join(extracted_counts, left_on="post_id", right_on="parent_post_id", how="left")
+            .with_columns(
+                pl.col("extracted_comment_count").fill_null(0),
+                (pl.col("comments_count") - pl.col("extracted_comment_count").fill_null(0)).alias("comment_gap"),
+            )
+            .sort("created_at", descending=True)
+        )
+
     def _top_comments_by_stance(
         self,
         *,
@@ -468,6 +515,89 @@ class ReportService:
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
         return pl.read_parquet(path) if path.exists() else pl.DataFrame()
+
+    def _write_tabular_exports(self, run_id: str, export_tables: dict[str, pl.DataFrame]) -> list[Path]:
+        export_root = self.paths.reports_root / f"report_{run_id}_tables"
+        export_root.mkdir(parents=True, exist_ok=True)
+
+        csv_paths: list[Path] = []
+        for table_name, frame in export_tables.items():
+            csv_path = export_root / f"{table_name}.csv"
+            self._sanitize_export_frame(frame).write_csv(csv_path)
+            csv_paths.append(csv_path)
+
+        workbook_path = self.paths.reports_root / f"report_{run_id}.xlsx"
+        workbook = Workbook()
+        default_sheet = workbook.active
+        workbook.remove(default_sheet)
+        for table_name, frame in export_tables.items():
+            worksheet = workbook.create_sheet(title=self._sheet_name(table_name))
+            sanitized = self._sanitize_export_frame(frame)
+            worksheet.append(list(sanitized.columns))
+            for row in sanitized.iter_rows():
+                worksheet.append([self._excel_cell_value(value) for value in row])
+        workbook.save(workbook_path)
+        return [*csv_paths, workbook_path]
+
+    @staticmethod
+    def _rows_to_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+        return pl.DataFrame(rows) if rows else pl.DataFrame()
+
+    @staticmethod
+    def _sanitize_export_frame(frame: pl.DataFrame) -> pl.DataFrame:
+        if frame.is_empty():
+            return frame
+        expressions: list[pl.Expr] = []
+        for column_name, dtype in frame.schema.items():
+            base_type = dtype.base_type() if hasattr(dtype, "base_type") else None
+            if base_type is pl.List:
+                expressions.append(
+                    pl.col(column_name).map_elements(
+                        ReportService._json_list_cell,
+                        return_dtype=pl.String,
+                    ).alias(column_name)
+                )
+            elif base_type is pl.Struct:
+                expressions.append(
+                    pl.col(column_name).map_elements(
+                        ReportService._json_object_cell,
+                        return_dtype=pl.String,
+                    ).alias(column_name)
+                )
+            else:
+                expressions.append(pl.col(column_name))
+        return frame.select(expressions)
+
+    @staticmethod
+    def _sheet_name(name: str) -> str:
+        trimmed = name[:31]
+        return trimmed or "sheet"
+
+    @staticmethod
+    def _excel_cell_value(value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, (list, dict)):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+
+    @staticmethod
+    def _json_list_cell(value: Any) -> str:
+        if value is None:
+            return "[]"
+        if isinstance(value, pl.Series):
+            return json.dumps(value.to_list(), ensure_ascii=False)
+        if isinstance(value, tuple):
+            return json.dumps(list(value), ensure_ascii=False)
+        return json.dumps(value, ensure_ascii=False)
+
+    @staticmethod
+    def _json_object_cell(value: Any) -> str:
+        if value is None:
+            return "{}"
+        if isinstance(value, pl.Series):
+            return json.dumps(value.to_list(), ensure_ascii=False)
+        return json.dumps(value, ensure_ascii=False)
 
 
 def _merge_existing_export(path: Path, current: pl.DataFrame, keys: list[str], editable_columns: list[str]) -> pl.DataFrame:

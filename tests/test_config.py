@@ -6,7 +6,7 @@ from facebook_posts_analysis.config import ProjectConfig
 
 
 def test_project_config_requires_page_reference_and_sides() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         ProjectConfig.model_validate(
             {
                 "page": {},

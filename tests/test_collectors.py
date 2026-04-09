@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from facebook_posts_analysis.contracts import PostSnapshot
 from facebook_posts_analysis.collectors.meta_api import MetaApiCollector
 from facebook_posts_analysis.collectors.public_web import PublicWebCollector
+from facebook_posts_analysis.contracts import PostSnapshot
 from facebook_posts_analysis.raw_store import RawSnapshotStore
 
 
@@ -135,6 +135,22 @@ def test_public_web_metric_parser_reads_numeric_counts() -> None:
     assert PublicWebCollector._extract_metric_count("44") == 44
     assert PublicWebCollector._extract_metric_count("87 comments") == 87
     assert PublicWebCollector._extract_metric_count("Share") == 0
+
+
+def test_public_web_comment_article_limit_grows_for_larger_threads() -> None:
+    assert PublicWebCollector._comment_article_limit(0, aggressive=False) == 220
+    assert PublicWebCollector._comment_article_limit(35, aggressive=True) == 320
+    assert PublicWebCollector._comment_article_limit(120, aggressive=True) == 420
+
+
+def test_public_web_expansion_patterns_include_localized_variants() -> None:
+    comment_patterns = PublicWebCollector._comment_expansion_patterns()
+    reply_patterns = PublicWebCollector._reply_expansion_patterns()
+
+    assert any("Show more comments" in pattern for pattern in comment_patterns)
+    assert any("\\u041f\\u043e\\u043a\\u0430\\u0437\\u0430\\u0442\\u0438" in pattern for pattern in comment_patterns)
+    assert any("See previous replies" in pattern for pattern in reply_patterns)
+    assert any("\\u0412\\u0456\\u0434\\u043f\\u043e\\u0432\\u0456\\u0434\\u0456" in pattern for pattern in reply_patterns)
 
 
 def test_public_web_extracts_embedded_publish_time_from_html() -> None:

@@ -107,6 +107,131 @@ Environment variables supported by default:
 - `LLM_BASE_URL`
 - `LLM_API_KEY`
 
+## Quickstart
+
+1. Copy the public template:
+
+```bash
+cp config/project.yaml config/project.local.yaml
+```
+
+Windows PowerShell:
+
+```powershell
+Copy-Item config/project.yaml config/project.local.yaml
+```
+
+2. Edit `config/project.local.yaml`.
+3. Run one of the modes below with `--config config/project.local.yaml`.
+
+### Public Web Collection
+
+Use this when you want public-only scraping without a logged-in browser.
+
+Minimal settings:
+
+```yaml
+collector:
+  mode: "web"
+  public_web:
+    enabled: true
+    authenticated_browser:
+      enabled: false
+```
+
+Run:
+
+```bash
+facebook-posts-analysis run-many --config config/project.local.yaml --passes 3
+```
+
+Expected result:
+
+- posts and visible comments collected from public Facebook pages
+- best-effort coverage only
+- repeated passes can improve coverage
+
+### Authenticated Browser Collection
+
+Use this when public DOM is too shallow and your local browser session can see more content.
+
+Minimal settings:
+
+```yaml
+collector:
+  mode: "web"
+  public_web:
+    enabled: true
+    authenticated_browser:
+      enabled: true
+      browser: "chrome"
+      profile_directory: "Default"
+      copy_profile: true
+```
+
+Optional environment variables:
+
+```bash
+export FACEBOOK_BROWSER_USER_DATA_DIR="/path/to/browser/User Data"
+export FACEBOOK_BROWSER_PROFILE_DIRECTORY="Default"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:FACEBOOK_BROWSER_USER_DATA_DIR="C:\Users\<user>\AppData\Local\Google\Chrome\User Data"
+$env:FACEBOOK_BROWSER_PROFILE_DIRECTORY="Default"
+```
+
+Run:
+
+```bash
+facebook-posts-analysis run-many --config config/project.local.yaml --passes 3
+```
+
+Expected result:
+
+- deeper comment extraction than public-only mode
+- still limited to what the logged-in account can see
+- no credentials stored in the project
+
+### Meta API Collection
+
+Use this when the target object and your Meta permissions allow API access.
+
+Minimal settings:
+
+```yaml
+collector:
+  mode: "api"
+  meta_api:
+    enabled: true
+```
+
+Environment variable:
+
+```bash
+export META_ACCESS_TOKEN="your-token"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:META_ACCESS_TOKEN="your-token"
+```
+
+Run:
+
+```bash
+facebook-posts-analysis run-all --config config/project.local.yaml
+```
+
+Expected result:
+
+- more stable structure than web scraping
+- still depends on Meta permissions and target object type
+- page or profile access is not guaranteed
+
 ## Usage
 
 Full pipeline:
@@ -129,6 +254,7 @@ facebook-posts-analysis normalize --config config/project.local.yaml --run-id <r
 facebook-posts-analysis analyze --config config/project.local.yaml --run-id <run_id>
 facebook-posts-analysis review-export --config config/project.local.yaml --run-id <run_id>
 facebook-posts-analysis report --config config/project.local.yaml --run-id <run_id>
+facebook-posts-analysis export-tables --config config/project.local.yaml --run-id <run_id>
 ```
 
 If you use another config path, replace `config/project.local.yaml` in the commands above.
@@ -142,6 +268,7 @@ The package exposes the `facebook-posts-analysis` CLI with:
 - `analyze`
 - `review-export`
 - `report`
+- `export-tables`
 - `run-all`
 - `run-many`
 
@@ -176,6 +303,8 @@ Reports:
 
 - `reports/report_<run_id>.md`
 - `reports/report_<run_id>.html`
+- `reports/report_<run_id>.xlsx`
+- `reports/report_<run_id>_tables/*.csv`
 
 ## Authenticated Browser Mode
 
@@ -206,7 +335,9 @@ These files or directories should stay local and should not be committed:
 Run:
 
 ```bash
-pytest
+uv run ruff check .
+uv run mypy src
+uv run pytest
 ```
 
 The test suite currently covers:
@@ -220,6 +351,14 @@ The test suite currently covers:
 - review override application
 - collection fallback and multi-pass behavior
 
+## CI
+
+GitHub Actions runs:
+
+- `ruff check .`
+- `mypy src`
+- `pytest -q`
+
 ## Important Limits
 
 - The public-web collector is best-effort. Facebook can expose different DOM states across runs.
@@ -227,3 +366,7 @@ The test suite currently covers:
 - Some posts may still show a visible comment counter while not yielding full text comments in the DOM.
 - API-first collection depends on the current Meta permission model and the target object type.
 - Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers will produce better analytical quality.
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE`.

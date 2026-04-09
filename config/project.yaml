@@ -1,18 +1,18 @@
-project_name: volodymyr_bugrov_facebook_analysis
+project_name: facebook_posts_analysis_template
 
 page:
-  url: "https://www.facebook.com/VolodymyrBugrov/"
+  url: "https://www.facebook.com/example-public-page/"
   page_id: null
-  page_name: "Володимир Бугров"
+  page_name: "Example Public Page"
 
 date_range:
-  start: "2026-02-02"
-  end: "2026-04-02"
+  start: null
+  end: null
 
 collector:
   mode: "web"
-  multi_pass_runs: 3
-  wait_between_passes_seconds: 2
+  multi_pass_runs: 1
+  wait_between_passes_seconds: 0
   meta_api:
     enabled: false
     api_version: "v25.0"
@@ -25,11 +25,11 @@ collector:
     enabled: true
     headless: true
     browser_channel: null
-    max_scrolls: 12
-    wait_after_scroll_ms: 2000
+    max_scrolls: 8
+    wait_after_scroll_ms: 1500
     timeout_seconds: 30
     authenticated_browser:
-      enabled: true
+      enabled: false
       browser: "chrome"
       user_data_dir: null
       profile_directory: "Default"
@@ -37,11 +37,11 @@ collector:
       temp_root_dir: null
 
 sides:
-  - side_id: "volodymyr_bugrov"
-    name: "Володимир Бугров"
-    aliases: ["Volodymyr Bugrov", "Бугров", "Bugrov", "Володимир"]
-    support_keywords: ["support bugrov", "support volodymyr bugrov", "підтримую бугрова", "підтримую володимира", "поддерживаю бугрова", "за бугрова"]
-    oppose_keywords: ["against bugrov", "oppose bugrov", "проти бугрова", "не підтримую бугрова", "против бугрова"]
+  - side_id: "example_actor"
+    name: "Example Actor"
+    aliases: ["Actor Example", "Example Side"]
+    support_keywords: ["support example actor", "stand with example actor"]
+    oppose_keywords: ["oppose example actor", "against example actor"]
 
 analysis:
   languages: ["ru", "uk", "en"]
@@ -52,7 +52,7 @@ analysis:
   max_items_per_item_type: null
 
 normalization:
-  merge_recent_runs: 4
+  merge_recent_runs: 1
 
 providers:
   embeddings:
