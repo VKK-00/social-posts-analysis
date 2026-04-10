@@ -38,6 +38,13 @@ collector:
       profile_directory: "Default"
       copy_profile: true
       temp_root_dir: null
+  telegram_web:
+    enabled: false
+    headless: true
+    browser_channel: null
+    max_scrolls: 6
+    wait_after_scroll_ms: 1200
+    timeout_seconds: 30
   telegram_mtproto:
     enabled: false
     session_file: null
@@ -46,6 +53,37 @@ collector:
     page_size: 100
     timeout_seconds: 30
     max_retries: 3
+  telegram_bot_api:
+    enabled: false
+    base_url: "https://api.telegram.org"
+    bot_token: null
+    update_limit: 100
+    timeout_seconds: 30
+    max_retries: 3
+    consume_updates: false
+    offset: null
+  x_api:
+    enabled: false
+    base_url: "https://api.x.com/2"
+    bearer_token: null
+    page_size: 100
+    timeout_seconds: 30
+    max_retries: 3
+    search_scope: "recent"
+  x_web:
+    enabled: false
+    headless: true
+    browser_channel: null
+    max_scrolls: 8
+    wait_after_scroll_ms: 1500
+    timeout_seconds: 30
+    authenticated_browser:
+      enabled: false
+      browser: "chrome"
+      user_data_dir: null
+      profile_directory: "Default"
+      copy_profile: true
+      temp_root_dir: null
 
 sides:
   - side_id: "example_actor"

@@ -224,7 +224,7 @@ class ReportService:
         source_type = (
             collection_runs["source_type"][0]
             if collection_runs.height and "source_type" in collection_runs.columns
-            else ("channel" if platform == "telegram" else "page")
+            else ("channel" if platform == "telegram" else "account" if platform == "x" else "page")
         )
         source_run_ids: list[str] = []
         if collection_runs.height and "source_run_ids" in collection_runs.columns:
@@ -246,6 +246,7 @@ class ReportService:
             "coverage_gaps": self._rows_to_frame(coverage_gaps),
         }
         telegram_summary = self._telegram_summary(posts, comments, collection_runs) if platform == "telegram" else None
+        x_summary = self._x_summary(posts, comments) if platform == "x" else None
         return {
             "title": f"Narrative analysis report: {source_name}",
             "run_id": run_id,
@@ -270,6 +271,7 @@ class ReportService:
             "reply_depth_summary": reply_depth_summary,
             "warnings": warnings,
             "telegram_summary": telegram_summary,
+            "x_summary": x_summary,
             "export_tables": export_tables,
         }
 
@@ -487,6 +489,20 @@ class ReportService:
             "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
             "total_forwards": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
             "total_reply_count": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
+            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
+        }
+
+    def _x_summary(
+        self,
+        posts: pl.DataFrame,
+        comments: pl.DataFrame,
+    ) -> dict[str, Any]:
+        return {
+            "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
+            "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
+            "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
+            "total_quotes": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
+            "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
             "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
         }
 

@@ -5,7 +5,8 @@ Local-first Python pipeline for collecting posts and comments from multiple soci
 Current supported platforms:
 
 - Facebook via Meta API or Playwright web collection
-- Telegram via MTProto session access with one channel per run and optional linked discussion chat
+- Telegram via MTProto session access or public web collection from `t.me/s/...`
+- X via official X API v2 or Playwright web collection
 
 Outputs are stored locally and can be reviewed in DuckDB, parquet, CSV, XLSX, Markdown, and HTML.
 
@@ -47,8 +48,10 @@ tests/
 - Python 3.12+
 - recommended: `uv`
 - Playwright plus Chromium if using Facebook web collection
+- Playwright plus Chromium if using Telegram or X web collection
 - a valid Meta token if using the Facebook API collector
 - Telegram API credentials and an authorized session file if using Telegram MTProto
+- an X bearer token if using the X API collector
 
 ## Installation
 
@@ -90,11 +93,11 @@ For actual runs, create a private local file such as `config/project.local.yaml`
 
 Important top-level settings:
 
-- `source.platform`: `facebook` or `telegram`
+- `source.platform`: `facebook`, `telegram`, or `x`
 - `source.url`, `source.source_id`, or `source.source_name`
 - `source.telegram.discussion_chat_id`
 - `date_range.start` and `date_range.end`
-- `collector.mode`: `api`, `web`, `hybrid`, or `mtproto`
+- `collector.mode`: `api`, `web`, `hybrid`, `mtproto`, `bot_api`, or `x_api`
 - `collector.multi_pass_runs`
 - `collector.wait_between_passes_seconds`
 - `normalization.merge_recent_runs`
@@ -110,6 +113,8 @@ Environment variables supported by default:
 - `TELEGRAM_SESSION_FILE`
 - `TELEGRAM_API_ID`
 - `TELEGRAM_API_HASH`
+- `TELEGRAM_BOT_TOKEN`
+- `X_BEARER_TOKEN`
 - `EMBEDDING_BASE_URL`
 - `EMBEDDING_API_KEY`
 - `LLM_BASE_URL`
@@ -273,6 +278,43 @@ Expected result:
 - more stable structure than web scraping
 - still depends on Meta permissions and target object type
 
+### Telegram Public Web Collection
+
+Use this when the Telegram source is public and visible on `t.me/s/...`, and you do not want to use MTProto credentials.
+
+Minimal settings:
+
+```yaml
+source:
+  platform: "telegram"
+  source_name: "example_channel"
+  telegram:
+    discussion_chat_id: "example_discussion"
+
+collector:
+  mode: "web"
+  meta_api:
+    enabled: false
+  public_web:
+    enabled: false
+  telegram_web:
+    enabled: true
+  telegram_mtproto:
+    enabled: false
+```
+
+Run:
+
+```bash
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+Expected result:
+
+- public channel posts collected from `t.me/s/<channel>`
+- if `source.telegram.discussion_chat_id` points to a public discussion feed, the collector will try to map discussion messages back to channel posts
+- if no public discussion feed is configured or visible, the run still succeeds with posts only and a warning
+
 ### Telegram MTProto Collection
 
 Use this when you want one Telegram channel per run, optionally with its linked discussion chat.
@@ -328,6 +370,146 @@ Expected result:
 - service messages filtered but counted in metadata
 - if there is no linked discussion chat, the run still succeeds with posts only and a warning
 
+### Telegram Bot API Collection
+
+Use this when you control a bot that already sees channel and discussion updates.
+
+Minimal settings:
+
+```yaml
+source:
+  platform: "telegram"
+  source_name: "example_channel"
+  telegram:
+    discussion_chat_id: "-1001234567890"
+
+collector:
+  mode: "bot_api"
+  meta_api:
+    enabled: false
+  public_web:
+    enabled: false
+  telegram_web:
+    enabled: false
+  telegram_mtproto:
+    enabled: false
+  telegram_bot_api:
+    enabled: true
+    bot_token: null
+    consume_updates: false
+```
+
+Environment variable:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:bot-token"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN="123456:bot-token"
+```
+
+Run:
+
+```bash
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+Expected result:
+
+- collects channel posts and discussion messages currently visible in the bot update queue
+- can map discussion replies to channel posts by thread id when those updates are present
+- does not backfill history, so this is useful for forward collection, not for historical archive recovery
+
+### X Web Collection
+
+Use this when you want public scraping from an X profile page. Replies on detail pages are best-effort and improve when an authenticated browser profile is enabled.
+
+Minimal settings:
+
+```yaml
+source:
+  platform: "x"
+  source_name: "example_account"
+
+collector:
+  mode: "web"
+  meta_api:
+    enabled: false
+  public_web:
+    enabled: false
+  telegram_mtproto:
+    enabled: false
+  x_web:
+    enabled: true
+    authenticated_browser:
+      enabled: false
+```
+
+Run:
+
+```bash
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+Expected result:
+
+- public profile posts collected from `x.com/<account>`
+- visible replies collected from detail pages when the web UI exposes them
+- without a logged-in browser, reply counters can exceed the number of visible reply articles and the report will show warnings
+
+### X API Collection
+
+Use this when you want one X account per run through the official X API v2.
+
+Minimal settings:
+
+```yaml
+source:
+  platform: "x"
+  source_name: "example_account"
+
+collector:
+  mode: "x_api"
+  meta_api:
+    enabled: false
+  public_web:
+    enabled: false
+  telegram_mtproto:
+    enabled: false
+  x_api:
+    enabled: true
+    bearer_token: null
+    search_scope: "recent"
+```
+
+Environment variable:
+
+```bash
+export X_BEARER_TOKEN="your-bearer-token"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:X_BEARER_TOKEN="your-bearer-token"
+```
+
+Run:
+
+```bash
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+Expected result:
+
+- source tweets collected from the configured account in the date range
+- replies collected by conversation search and reconstructed into reply trees
+- likes, reposts, replies, quotes, views, and media flags normalized into the generic schema
+- if `search_scope: recent` is used, old replies can be incomplete and the collector will emit an explicit warning
+
 ## Usage
 
 Full pipeline:
@@ -369,6 +551,7 @@ The package exposes the `social-posts-analysis` CLI with:
 - `run-many`
 
 `run-many` is most useful for unstable Facebook web collection, because the public DOM can reveal slightly different content across repeated passes.
+X API collection usually does not need `run-many`; `run-all` is the normal path there.
 
 ## Output Tables
 
@@ -447,7 +630,12 @@ GitHub Actions runs:
 - Facebook public-web collection is best-effort. The DOM can expose different content across runs.
 - Facebook authenticated browser mode still only sees what the logged-in account can see.
 - Telegram v1 supports one channel per run, plus its linked discussion chat when it exists.
-- Telegram Bot API and Telegram web scraping are intentionally out of scope for v1.
+- Telegram web collection works only for public `t.me/s/...` feeds. Public discussion comments are collected only when `source.telegram.discussion_chat_id` points to a visible discussion feed.
+- Telegram Bot API collection only sees updates currently available to the bot. It is not a historical backfill mechanism for old channel posts or comments.
+- Telegram Bot API is now supported as an official update-queue backend, but not as a history backfill backend.
+- X v1 supports one account per run through either the official API or the public web collector, but web coverage is best-effort.
+- X replies are collected through conversation search, so coverage depends on the current X API search access window. With `search_scope: recent`, older replies may be missing.
+- X web collection can scrape public profile posts, but public reply visibility is often shallower than the reply counter suggests unless an authenticated browser session is used.
 - Some posts may still show a visible comment counter while not yielding full text comments in the DOM.
 - API-first Facebook collection depends on the current Meta permission model and the target object type.
 - Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers produce better analytical quality.

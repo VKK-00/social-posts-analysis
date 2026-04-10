@@ -6,6 +6,7 @@ from social_posts_analysis.analysis.language import LanguageDetector
 from social_posts_analysis.analysis.metrics import compute_support_metrics
 from social_posts_analysis.analysis.providers import HeuristicLLMProvider, OpenAICompatibleLLMProvider
 from social_posts_analysis.config import LLMProviderConfig, SideConfig
+from social_posts_analysis.reporting.service import ReportService
 
 
 def test_language_detector_fallbacks() -> None:
@@ -95,3 +96,35 @@ def test_openai_compatible_llm_provider_parses_json(monkeypatch) -> None:
 
     assert prediction["label"] == "support"
     assert prediction["confidence"] == 0.91
+
+
+def test_report_service_builds_x_summary(project_config, project_paths) -> None:
+    service = ReportService(project_config, project_paths)
+    posts = pl.DataFrame(
+        [
+            {
+                "views": 100,
+                "reactions": 5,
+                "shares": 2,
+                "forwards": 1,
+                "reply_count": 3,
+                "reaction_breakdown_json": '{"like_count": 5, "retweet_count": 2, "view_count": 100}',
+            }
+        ]
+    )
+    comments = pl.DataFrame(
+        [
+            {
+                "reaction_breakdown_json": '{"like_count": 1}',
+            }
+        ]
+    )
+
+    summary = service._x_summary(posts, comments)
+
+    assert summary["total_views"] == 100
+    assert summary["total_likes"] == 5
+    assert summary["total_reposts"] == 2
+    assert summary["total_quotes"] == 1
+    assert summary["total_replies"] == 3
+    assert summary["reaction_breakdown"][0]["reaction"] == "view_count"

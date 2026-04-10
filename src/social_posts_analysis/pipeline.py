@@ -7,7 +7,11 @@ from typing import Any
 from social_posts_analysis.collectors.base import BaseCollector, CollectorUnavailableError
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
 from social_posts_analysis.collectors.public_web import PublicWebCollector
+from social_posts_analysis.collectors.telegram_bot_api import TelegramBotApiCollector
 from social_posts_analysis.collectors.telegram_mtproto import TelegramMtprotoCollector
+from social_posts_analysis.collectors.telegram_web import TelegramWebCollector
+from social_posts_analysis.collectors.x_api import XApiCollector
+from social_posts_analysis.collectors.x_web import XWebCollector
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import CollectionManifest
 from social_posts_analysis.paths import ProjectPaths
@@ -63,7 +67,15 @@ class CollectionService:
 
     def _build_collectors(self) -> list[BaseCollector]:
         if self.config.source.platform == "telegram":
-            return [TelegramMtprotoCollector(self.config)]
+            if self.config.collector.mode == "mtproto":
+                return [TelegramMtprotoCollector(self.config)]
+            if self.config.collector.mode == "bot_api":
+                return [TelegramBotApiCollector(self.config)]
+            return [TelegramWebCollector(self.config)]
+        if self.config.source.platform == "x":
+            if self.config.collector.mode == "x_api":
+                return [XApiCollector(self.config)]
+            return [XWebCollector(self.config)]
 
         mode = self.config.collector.mode
         collector_classes: list[type[Any]]

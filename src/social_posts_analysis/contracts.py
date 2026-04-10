@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PlatformName = Literal["facebook", "telegram"]
-CollectorMode = Literal["api", "web", "hybrid", "mtproto"]
+PlatformName = Literal["facebook", "telegram", "x"]
+CollectorMode = Literal["api", "web", "hybrid", "mtproto", "bot_api", "x_api"]
 
 
 class AuthorSnapshot(BaseModel):

@@ -96,3 +96,161 @@ def test_project_config_accepts_telegram_mtproto_settings() -> None:
     assert config.source.platform == "telegram"
     assert config.collector.telegram_mtproto.session_file == ".sessions/example"
     assert config.source.telegram.discussion_chat_id == "-100123"
+
+
+def test_project_config_accepts_telegram_web_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "telegram",
+                "source_name": "example_channel",
+                "telegram": {"discussion_chat_id": "example_discussion"},
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "web",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "telegram_web": {
+                    "enabled": True,
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "x_web": {"enabled": False},
+            },
+        }
+    )
+
+    assert config.source.platform == "telegram"
+    assert config.collector.mode == "web"
+    assert config.collector.telegram_web.enabled is True
+
+
+def test_project_config_accepts_telegram_bot_api_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "telegram",
+                "source_name": "example_channel",
+                "telegram": {"discussion_chat_id": "-100123"},
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "bot_api",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "telegram_bot_api": {
+                    "enabled": True,
+                    "bot_token": "123:token",
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "x_web": {"enabled": False},
+            },
+        }
+    )
+
+    assert config.source.platform == "telegram"
+    assert config.collector.mode == "bot_api"
+    assert config.collector.telegram_bot_api.bot_token == "123:token"
+
+
+def test_project_config_requires_x_bearer_token() -> None:
+    with pytest.raises(ValueError):
+        ProjectConfig.model_validate(
+            {
+                "source": {"platform": "x", "source_name": "example_account"},
+                "sides": [{"side_id": "a", "name": "A"}],
+                "collector": {
+                    "mode": "x_api",
+                    "meta_api": {"enabled": False},
+                    "public_web": {"enabled": False},
+                    "telegram_mtproto": {
+                        "enabled": False,
+                        "session_file": None,
+                        "api_id": None,
+                        "api_hash": None,
+                    },
+                    "x_api": {
+                        "enabled": True,
+                        "bearer_token": None,
+                    },
+                },
+            }
+        )
+
+
+def test_project_config_accepts_x_api_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "x",
+                "source_name": "example_account",
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "x_api",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "x_api": {
+                    "enabled": True,
+                    "bearer_token": "token",
+                    "search_scope": "recent",
+                },
+            },
+        }
+    )
+
+    assert config.source.platform == "x"
+    assert config.collector.mode == "x_api"
+    assert config.collector.x_api.bearer_token == "token"
+
+
+def test_project_config_accepts_x_web_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "x",
+                "source_name": "example_account",
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "web",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "telegram_web": {"enabled": False},
+                "x_api": {"enabled": False, "bearer_token": None},
+                "x_web": {
+                    "enabled": True,
+                    "authenticated_browser": {"enabled": False},
+                },
+            },
+        }
+    )
+
+    assert config.source.platform == "x"
+    assert config.collector.mode == "web"
+    assert config.collector.x_web.enabled is True

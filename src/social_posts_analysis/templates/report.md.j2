@@ -28,6 +28,21 @@ Telegram metrics:
 {% endif %}
 {% endif %}
 
+{% if x_summary %}
+X metrics:
+- Total views: `{{ x_summary.total_views }}`
+- Total likes: `{{ x_summary.total_likes }}`
+- Total reposts: `{{ x_summary.total_reposts }}`
+- Total quotes: `{{ x_summary.total_quotes }}`
+- Total replies: `{{ x_summary.total_replies }}`
+{% if x_summary.reaction_breakdown %}
+- Metric breakdown:
+{% for row in x_summary.reaction_breakdown %}
+  - `{{ row.reaction }}`: {{ row.count }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
 {% if source_run_ids %}
 Source runs:
 {% for source_run_id in source_run_ids %}

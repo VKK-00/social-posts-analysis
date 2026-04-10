@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
 from social_posts_analysis.collectors.public_web import PublicWebCollector
+from social_posts_analysis.collectors.telegram_bot_api import TelegramBotApiCollector
 from social_posts_analysis.collectors.telegram_mtproto import DiscussionContext, TelegramMtprotoCollector
+from social_posts_analysis.collectors.telegram_web import TelegramWebCollector
+from social_posts_analysis.collectors.x_api import XApiCollector
+from social_posts_analysis.collectors.x_web import XWebCollector
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import PostSnapshot
 from social_posts_analysis.raw_store import RawSnapshotStore
@@ -381,6 +385,119 @@ def _telegram_config() -> ProjectConfig:
     )
 
 
+def _x_config() -> ProjectConfig:
+    return ProjectConfig.model_validate(
+        {
+            "source": {"platform": "x", "source_name": "example_account"},
+            "date_range": {"start": "2026-04-01", "end": "2026-04-09"},
+            "sides": [{"side_id": "side_a", "name": "Actor A"}],
+            "collector": {
+                "mode": "x_api",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "x_api": {
+                    "enabled": True,
+                    "bearer_token": "token",
+                    "page_size": 100,
+                    "search_scope": "recent",
+                },
+            },
+        }
+    )
+
+
+def _telegram_web_config() -> ProjectConfig:
+    return ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "telegram",
+                "source_name": "example_channel",
+                "telegram": {"discussion_chat_id": "example_discussion"},
+            },
+            "date_range": {"start": "2026-04-01", "end": "2026-04-09"},
+            "sides": [{"side_id": "side_a", "name": "Actor A"}],
+            "collector": {
+                "mode": "web",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "telegram_web": {
+                    "enabled": True,
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "x_web": {"enabled": False},
+            },
+        }
+    )
+
+
+def _telegram_bot_api_config() -> ProjectConfig:
+    return ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "telegram",
+                "source_name": "example_channel",
+                "telegram": {"discussion_chat_id": "-100200"},
+            },
+            "date_range": {"start": "2026-04-01", "end": "2026-04-09"},
+            "sides": [{"side_id": "side_a", "name": "Actor A"}],
+            "collector": {
+                "mode": "bot_api",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "telegram_bot_api": {
+                    "enabled": True,
+                    "bot_token": "123:token",
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "x_web": {"enabled": False},
+            },
+        }
+    )
+
+
+def _x_web_config() -> ProjectConfig:
+    return ProjectConfig.model_validate(
+        {
+            "source": {"platform": "x", "source_name": "example_account"},
+            "date_range": {"start": "2026-04-01", "end": "2026-04-09"},
+            "sides": [{"side_id": "side_a", "name": "Actor A"}],
+            "collector": {
+                "mode": "web",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "telegram_web": {"enabled": False},
+                "x_api": {"enabled": False, "bearer_token": None},
+                "x_web": {"enabled": True},
+            },
+        }
+    )
+
+
 def test_telegram_collector_collects_posts_without_discussion(tmp_path: Path, monkeypatch) -> None:
     config = _telegram_config()
     collector = TelegramMtprotoCollector(config)
@@ -471,6 +588,167 @@ def test_telegram_collector_builds_nested_discussion_tree(tmp_path: Path, monkey
     assert manifest.posts[0].comments[1].reaction_breakdown_json == '{"🔥": 2}'
 
 
+def test_x_api_collector_collects_posts_and_nested_replies(tmp_path: Path, monkeypatch) -> None:
+    config = _x_config()
+    collector = XApiCollector(config)
+
+    def fake_get_json(self, endpoint, params=None):  # noqa: ANN001, ANN202
+        if endpoint == "/users/by/username/example_account":
+            return {
+                "data": {
+                    "id": "42",
+                    "name": "Example Account",
+                    "username": "example_account",
+                    "description": "Example source",
+                    "public_metrics": {"followers_count": 321},
+                }
+            }
+        if endpoint == "/users/42/tweets":
+            return {
+                "data": [
+                    {
+                        "id": "100",
+                        "text": "Root X post about Actor A",
+                        "created_at": "2026-04-08T10:00:00Z",
+                        "conversation_id": "100",
+                        "author_id": "42",
+                        "attachments": {"media_keys": ["m1"]},
+                        "public_metrics": {
+                            "like_count": 7,
+                            "retweet_count": 3,
+                            "reply_count": 2,
+                            "quote_count": 1,
+                            "bookmark_count": 0,
+                            "impression_count": 250,
+                        },
+                    }
+                ],
+                "includes": {
+                    "users": [
+                        {"id": "42", "name": "Example Account", "username": "example_account"},
+                    ],
+                    "media": [
+                        {"media_key": "m1", "type": "photo", "url": "https://img.example/m1.jpg"},
+                    ],
+                },
+                "meta": {"result_count": 1},
+            }
+        if endpoint == "/tweets/search/recent":
+            return {
+                "data": [
+                    {
+                        "id": "101",
+                        "text": "I support Actor A",
+                        "created_at": "2026-04-08T10:05:00Z",
+                        "conversation_id": "100",
+                        "author_id": "501",
+                        "referenced_tweets": [{"type": "replied_to", "id": "100"}],
+                        "public_metrics": {"like_count": 2, "reply_count": 1, "retweet_count": 0, "quote_count": 0},
+                    },
+                    {
+                        "id": "102",
+                        "text": "I oppose that reply",
+                        "created_at": "2026-04-08T10:06:00Z",
+                        "conversation_id": "100",
+                        "author_id": "502",
+                        "referenced_tweets": [{"type": "replied_to", "id": "101"}],
+                        "public_metrics": {"like_count": 1, "reply_count": 0, "retweet_count": 0, "quote_count": 0},
+                    },
+                ],
+                "includes": {
+                    "users": [
+                        {"id": "501", "name": "Alice", "username": "alice"},
+                        {"id": "502", "name": "Bob", "username": "bob"},
+                    ]
+                },
+                "meta": {"result_count": 2},
+            }
+        raise AssertionError(f"Unexpected request: endpoint={endpoint}, params={params}")
+
+    monkeypatch.setattr(collector, "_get_json", fake_get_json.__get__(collector, XApiCollector))
+    manifest = collector.collect("x-run-1", RawSnapshotStore(tmp_path / "raw"))
+
+    assert manifest.source.platform == "x"
+    assert manifest.source.source_type == "account"
+    assert manifest.source.followers_count == 321
+    assert len(manifest.posts) == 1
+    assert manifest.posts[0].permalink == "https://x.com/example_account/status/100"
+    assert manifest.posts[0].views == 250
+    assert manifest.posts[0].shares == 3
+    assert manifest.posts[0].forwards == 1
+    assert manifest.posts[0].has_media is True
+    assert len(manifest.posts[0].comments) == 2
+    assert [comment.depth for comment in manifest.posts[0].comments] == [0, 1]
+    assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
+
+
+def test_x_api_recent_search_warning_for_old_start_date() -> None:
+    config = _x_config()
+    config.date_range.start = (datetime.now(tz=UTC) - timedelta(days=10)).date().isoformat()
+    collector = XApiCollector(config)
+
+    warnings = collector._search_window_warnings()
+
+    assert warnings
+    assert "search_scope='recent'" in warnings[0]
+
+
+def test_telegram_bot_api_collector_maps_channel_posts_and_discussion_replies(tmp_path: Path, monkeypatch) -> None:
+    collector = TelegramBotApiCollector(_telegram_bot_api_config())
+
+    def fake_get_json(self, endpoint, params=None):  # noqa: ANN001, ANN202
+        assert endpoint == "/getUpdates"
+        return {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 1,
+                    "channel_post": {
+                        "message_id": 10,
+                        "date": 1775632800,
+                        "chat": {"id": -100100, "type": "channel", "title": "Example Channel", "username": "example_channel"},
+                        "text": "Channel post from bot updates",
+                    },
+                },
+                {
+                    "update_id": 2,
+                    "message": {
+                        "message_id": 100,
+                        "message_thread_id": 10,
+                        "date": 1775633100,
+                        "chat": {"id": -100200, "type": "supergroup", "title": "Example Discussion"},
+                        "from": {"id": 501, "first_name": "Alice", "username": "alice"},
+                        "text": "Top-level discussion comment",
+                    },
+                },
+                {
+                    "update_id": 3,
+                    "message": {
+                        "message_id": 101,
+                        "message_thread_id": 10,
+                        "date": 1775633160,
+                        "chat": {"id": -100200, "type": "supergroup", "title": "Example Discussion"},
+                        "from": {"id": 502, "first_name": "Bob", "username": "bob"},
+                        "text": "Nested discussion comment",
+                        "reply_to_message": {"message_id": 100},
+                    },
+                },
+            ],
+        }
+
+    monkeypatch.setattr(collector, "_get_json", fake_get_json.__get__(collector, TelegramBotApiCollector))
+    manifest = collector.collect("tg-bot-run-1", RawSnapshotStore(tmp_path / "raw"))
+
+    assert manifest.source.platform == "telegram"
+    assert manifest.source.discussion_linked is True
+    assert len(manifest.posts) == 1
+    assert manifest.posts[0].message == "Channel post from bot updates"
+    assert len(manifest.posts[0].comments) == 2
+    assert manifest.posts[0].comments[0].depth == 0
+    assert manifest.posts[0].comments[1].depth == 1
+    assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
+
+
 def test_telegram_collector_reaction_breakdown_and_media_type() -> None:
     config = _telegram_config()
     collector = TelegramMtprotoCollector(config)
@@ -486,3 +764,186 @@ def test_telegram_collector_reaction_breakdown_and_media_type() -> None:
 
     assert breakdown == {"👍": 3}
     assert media_type == "photo"
+
+
+def test_telegram_web_collector_maps_public_discussion_comments(tmp_path: Path) -> None:
+    collector = TelegramWebCollector(_telegram_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+    source_payload = {
+        "source_id": "example_channel",
+        "source_name": "Example Channel",
+        "source_url": "https://t.me/s/example_channel",
+        "messages": [
+            {
+                "message_token": "example_channel/10",
+                "message_id": "10",
+                "permalink": "https://t.me/example_channel/10",
+                "created_at": "2026-04-08T10:00:00+00:00",
+                "text": "Root channel post",
+                "views": "1.2K",
+                "has_media": False,
+                "media_type": None,
+                "reaction_breakdown": {"emoji-1": 5},
+            }
+        ],
+    }
+    posts = collector._build_posts_from_payload(source_payload, raw_store)
+    discussion_payload = {
+        "source_id": "example_discussion",
+        "messages": [
+            {
+                "message_token": "example_discussion/100",
+                "message_id": "100",
+                "permalink": "https://t.me/example_discussion/100",
+                "created_at": "2026-04-08T10:05:00+00:00",
+                "text": "Top-level discussion reply",
+                "author_id": "alice",
+                "author_name": "Alice",
+                "reply_permalink": "https://t.me/example_channel/10",
+                "reply_message_id": "10",
+                "reaction_breakdown": {"emoji-1": 2},
+            },
+            {
+                "message_token": "example_discussion/101",
+                "message_id": "101",
+                "permalink": "https://t.me/example_discussion/101",
+                "created_at": "2026-04-08T10:06:00+00:00",
+                "text": "Nested discussion reply",
+                "author_id": "bob",
+                "author_name": "Bob",
+                "reply_permalink": "https://t.me/example_discussion/100",
+                "reply_message_id": "100",
+                "reaction_breakdown": {},
+            },
+        ],
+    }
+
+    merged = collector._attach_discussion_comments(
+        posts=posts,
+        posts_by_permalink={posts[0].permalink: posts[0]},
+        discussion_payload=discussion_payload,
+        raw_store=raw_store,
+    )
+
+    assert len(merged[0].comments) == 2
+    assert merged[0].comments[0].depth == 0
+    assert merged[0].comments[1].depth == 1
+    assert merged[0].comments[1].parent_comment_id == merged[0].comments[0].comment_id
+
+
+def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkeypatch) -> None:
+    collector = XWebCollector(_x_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+    posts = collector._build_posts_from_payload(
+        {
+            "posts": [
+                {
+                    "status_id": "200",
+                    "created_at": "2026-04-08T10:00:00Z",
+                    "text": "Visible X post",
+                    "permalink": "https://x.com/example_account/status/200",
+                    "author_name": "Example Account",
+                    "author_username": "example_account",
+                    "reply_count": "12",
+                    "retweet_count": "5",
+                    "like_count": "33",
+                    "view_count": "4.5K",
+                    "has_media": True,
+                    "media_type": "photo",
+                }
+            ]
+        },
+        source_id="example_account",
+        source_name="Example Account",
+        raw_store=raw_store,
+    )
+
+    class FakePage:
+        def goto(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    monkeypatch.setattr(collector, "_dismiss_cookie_banner", lambda page: None)
+    monkeypatch.setattr(collector, "_scroll_timeline", lambda page, passes=None: None)
+    monkeypatch.setattr(
+        collector,
+        "_extract_status_payload",
+        lambda page: {
+            "main_status_id": "200",
+            "replies": [
+                {
+                    "status_id": "201",
+                    "created_at": "2026-04-08T10:05:00Z",
+                    "text": "Visible reply",
+                    "permalink": "https://x.com/alice/status/201",
+                    "author_name": "Alice",
+                    "author_username": "alice",
+                    "reply_count": "0",
+                    "retweet_count": "1",
+                    "like_count": "4",
+                    "view_count": "120",
+                }
+            ],
+        },
+    )
+
+    replies = collector._collect_replies_for_post(context=FakeContext(), post=posts[0], raw_store=raw_store)
+
+    assert posts[0].comments_count == 12
+    assert posts[0].views == 4500
+    assert posts[0].shares == 5
+    assert replies[0].parent_post_id == posts[0].post_id
+    assert replies[0].reply_to_message_id == "200"
+    assert replies[0].reactions == 4
+
+
+def test_x_web_collector_filters_profile_feed_to_source_author(tmp_path: Path) -> None:
+    collector = XWebCollector(_x_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+
+    posts = collector._build_posts_from_payload(
+        {
+            "posts": [
+                {
+                    "status_id": "200",
+                    "created_at": "2026-04-08T10:00:00Z",
+                    "text": "Own post",
+                    "permalink": "https://x.com/example_account/status/200",
+                    "author_name": "Example Account",
+                    "author_username": "example_account",
+                    "reply_count": "12",
+                    "retweet_count": "5",
+                    "like_count": "33",
+                    "view_count": "4.5K",
+                    "has_media": False,
+                    "media_type": None,
+                },
+                {
+                    "status_id": "201",
+                    "created_at": "2026-04-08T10:10:00Z",
+                    "text": "Affiliate post",
+                    "permalink": "https://x.com/other_author/status/201",
+                    "author_name": "Other Author",
+                    "author_username": "other_author",
+                    "reply_count": "1",
+                    "retweet_count": "1",
+                    "like_count": "1",
+                    "view_count": "10",
+                    "has_media": False,
+                    "media_type": None,
+                },
+            ]
+        },
+        source_id="example_account",
+        source_name="Example Account",
+        raw_store=raw_store,
+    )
+
+    assert len(posts) == 1
+    assert posts[0].permalink == "https://x.com/example_account/status/200"
