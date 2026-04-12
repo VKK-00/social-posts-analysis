@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -19,6 +18,8 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import RangeFilter
+from .value_utils import safe_int
 
 
 class InstagramGraphApiCollector(BaseCollector):
@@ -33,6 +34,7 @@ class InstagramGraphApiCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.instagram_graph_api
+        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
             raise CollectorUnavailableError(
                 "Instagram Graph API collector is disabled in config.collector.instagram_graph_api.enabled."
@@ -57,7 +59,7 @@ class InstagramGraphApiCollector(BaseCollector):
             source_url=f"https://www.instagram.com/{source_payload.get('username')}/" if source_payload.get("username") else self.config.source.url,
             source_type="account",
             about=source_payload.get("biography"),
-            followers_count=self._safe_int(source_payload.get("followers_count")),
+            followers_count=safe_int(source_payload.get("followers_count")),
             source_collector=self.name,
             raw_path=str(source_path),
         )
@@ -111,9 +113,9 @@ class InstagramGraphApiCollector(BaseCollector):
             created_at=media.get("timestamp"),
             message=media.get("caption"),
             permalink=media.get("permalink"),
-            reactions=self._safe_int(media.get("like_count")) or 0,
+            reactions=safe_int(media.get("like_count")) or 0,
             shares=0,
-            comments_count=max(self._safe_int(media.get("comments_count")) or 0, len(comments)),
+            comments_count=max(safe_int(media.get("comments_count")) or 0, len(comments)),
             has_media=bool(media.get("media_type")),
             media_type=str(media.get("media_type") or "") or None,
             source_collector=self.name,
@@ -143,7 +145,7 @@ class InstagramGraphApiCollector(BaseCollector):
                 created_at=item.get("timestamp"),
                 message=item.get("text"),
                 permalink=None,
-                reactions=self._safe_int(item.get("like_count")) or 0,
+                reactions=safe_int(item.get("like_count")) or 0,
                 source_collector=self.name,
                 depth=0,
                 raw_path=str(raw_path),
@@ -168,7 +170,7 @@ class InstagramGraphApiCollector(BaseCollector):
                         created_at=reply.get("timestamp"),
                         message=reply.get("text"),
                         permalink=None,
-                        reactions=self._safe_int(reply.get("like_count")) or 0,
+                        reactions=safe_int(reply.get("like_count")) or 0,
                         source_collector=self.name,
                         depth=1,
                         raw_path=str(reply_path),
@@ -208,44 +210,7 @@ class InstagramGraphApiCollector(BaseCollector):
         return refs
 
     def _within_range(self, raw_value: object) -> bool:
-        if raw_value is None:
-            return False
-        current = self._parse_datetime(str(raw_value))
-        if current is None:
-            return False
-        start = self._parse_datetime(self.config.date_range.start, end_of_day=False)
-        end = self._parse_datetime(self.config.date_range.end, end_of_day=True)
-        if start and current < start:
-            return False
-        if end and current > end:
-            return False
-        return True
-
-    @staticmethod
-    def _parse_datetime(raw_value: str | None, *, end_of_day: bool = False) -> datetime | None:
-        if not raw_value:
-            return None
-        try:
-            if "T" in raw_value:
-                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-            else:
-                parsed = datetime.fromisoformat(
-                    f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00"
-                )
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-
-    @staticmethod
-    def _safe_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
+        return self.range_filter.contains(None if raw_value is None else str(raw_value), allow_missing=False)
 
     @retry(
         retry=retry_if_exception_type(httpx.HTTPError),

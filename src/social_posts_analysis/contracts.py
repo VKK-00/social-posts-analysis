@@ -141,6 +141,8 @@ class CollectionManifest(BaseModel):
 
     run_id: str
     collected_at: str
+    requested_date_start: str | None = None
+    requested_date_end: str | None = None
     collector: str
     mode: CollectorMode
     status: Literal["success", "partial", "failed"] = "success"

@@ -21,6 +21,8 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import parse_configured_datetime
+from .value_utils import safe_int
 
 
 class XApiCollector(BaseCollector):
@@ -31,7 +33,7 @@ class XApiCollector(BaseCollector):
         "in_reply_to_user_id,public_metrics,lang"
     )
     MEDIA_FIELDS = "media_key,type,url,preview_image_url"
-    EXPANSIONS = "author_id,attachments.media_keys"
+    EXPANSIONS = "author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.author_id"
 
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
@@ -61,7 +63,7 @@ class XApiCollector(BaseCollector):
             source_url=self._source_url(source_data),
             source_type="account",
             about=source_data.get("description"),
-            followers_count=self._safe_int(((source_data.get("public_metrics") or {}).get("followers_count"))),
+            followers_count=safe_int(((source_data.get("public_metrics") or {}).get("followers_count"))),
             source_collector=self.name,
             raw_path=str(source_raw_path),
         )
@@ -268,25 +270,28 @@ class XApiCollector(BaseCollector):
             name=source_snapshot.source_name,
             profile_url=source_snapshot.source_url,
         )
-        propagation_kind, origin_post_id, origin_external_id = self._propagation_metadata(tweet_payload)
+        propagation_kind, origin_post_id, origin_external_id, origin_permalink = self._propagation_metadata(
+            tweet_payload,
+            includes=includes,
+        )
         return PostSnapshot(
             post_id=post_id,
             platform="x",
             source_id=source_snapshot.source_id,
             origin_post_id=origin_post_id,
             origin_external_id=origin_external_id,
-            origin_permalink=self._origin_permalink(origin_external_id),
+            origin_permalink=origin_permalink,
             propagation_kind=propagation_kind,
             is_propagation=propagation_kind is not None,
             created_at=tweet_payload.get("created_at"),
             message=tweet_payload.get("text"),
             permalink=self._tweet_permalink(author, tweet_id),
-            reactions=self._safe_int(public_metrics.get("like_count")) or 0,
-            shares=self._safe_int(public_metrics.get("retweet_count")) or 0,
-            comments_count=self._safe_int(public_metrics.get("reply_count")) or 0,
+            reactions=safe_int(public_metrics.get("like_count")) or 0,
+            shares=safe_int(public_metrics.get("retweet_count")) or 0,
+            comments_count=safe_int(public_metrics.get("reply_count")) or 0,
             views=self._extract_views(tweet_payload),
-            forwards=self._safe_int(public_metrics.get("quote_count")),
-            reply_count=self._safe_int(public_metrics.get("reply_count")),
+            forwards=safe_int(public_metrics.get("quote_count")),
+            reply_count=safe_int(public_metrics.get("reply_count")),
             has_media=bool(media_refs),
             media_type=media_refs[0].media_type if media_refs else None,
             reaction_breakdown_json=json.dumps(reaction_breakdown, ensure_ascii=False) if reaction_breakdown else None,
@@ -333,7 +338,7 @@ class XApiCollector(BaseCollector):
             created_at=tweet_payload.get("created_at"),
             message=tweet_payload.get("text"),
             permalink=self._tweet_permalink(author, tweet_id),
-            reactions=self._safe_int(public_metrics.get("like_count")) or 0,
+            reactions=safe_int(public_metrics.get("like_count")) or 0,
             reaction_breakdown_json=json.dumps(self._metric_breakdown(tweet_payload), ensure_ascii=False),
             source_collector=self.name,
             depth=depth,
@@ -350,12 +355,17 @@ class XApiCollector(BaseCollector):
             for user in includes_payload.get("users") or []
             if user.get("id") is not None
         }
+        tweets = {
+            str(item.get("id")): item
+            for item in includes_payload.get("tweets") or []
+            if item.get("id") is not None
+        }
         media = {
             str(item.get("media_key")): item
             for item in includes_payload.get("media") or []
             if item.get("media_key") is not None
         }
-        return {"users": users, "media": media}
+        return {"users": users, "tweets": tweets, "media": media}
 
     def _author_from_payload(
         self,
@@ -399,33 +409,51 @@ class XApiCollector(BaseCollector):
         breakdown: dict[str, int] = {}
         for key in ("like_count", "retweet_count", "reply_count", "quote_count", "bookmark_count"):
             if key in public_metrics:
-                breakdown[key] = self._safe_int(public_metrics.get(key)) or 0
+                breakdown[key] = safe_int(public_metrics.get(key)) or 0
         view_count = self._extract_views(tweet_payload)
         if view_count is not None:
             breakdown["view_count"] = view_count
         return breakdown
 
     @classmethod
-    def _propagation_metadata(cls, tweet_payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    def _propagation_metadata(
+        cls,
+        tweet_payload: dict[str, Any],
+        *,
+        includes: dict[str, dict[str, dict[str, Any]]],
+    ) -> tuple[str | None, str | None, str | None, str | None]:
         for item in tweet_payload.get("referenced_tweets") or []:
             reference_type = str(item.get("type") or "")
             reference_id = str(item.get("id") or "")
             if not reference_id:
                 continue
+            referenced_tweet = includes.get("tweets", {}).get(reference_id) or {}
+            referenced_author_id = str(referenced_tweet.get("author_id") or "") or None
+            referenced_author = includes.get("users", {}).get(referenced_author_id or "") if referenced_author_id else None
+            if referenced_author_id:
+                origin_post_id = cls._post_id(referenced_author_id, reference_id)
+            else:
+                origin_post_id = cls._origin_placeholder_post_id(reference_id)
+            origin_permalink = cls._origin_permalink(
+                reference_id,
+                username=(referenced_author or {}).get("username") if isinstance(referenced_author, dict) else None,
+            )
             if reference_type == "quoted":
-                return "quote", cls._origin_placeholder_post_id(reference_id), reference_id
+                return "quote", origin_post_id, reference_id, origin_permalink
             if reference_type == "retweeted":
-                return "repost", cls._origin_placeholder_post_id(reference_id), reference_id
-        return None, None, None
+                return "repost", origin_post_id, reference_id, origin_permalink
+        return None, None, None, None
 
     @staticmethod
     def _origin_placeholder_post_id(native_tweet_id: str) -> str:
         return f"x:origin:{native_tweet_id}"
 
     @staticmethod
-    def _origin_permalink(native_tweet_id: str | None) -> str | None:
+    def _origin_permalink(native_tweet_id: str | None, *, username: str | None = None) -> str | None:
         if not native_tweet_id:
             return None
+        if username:
+            return f"https://x.com/{username}/status/{native_tweet_id}"
         return f"https://x.com/i/status/{native_tweet_id}"
 
     @staticmethod
@@ -438,10 +466,10 @@ class XApiCollector(BaseCollector):
         for payload in metrics_candidates:
             for key in ("impression_count", "view_count"):
                 value = payload.get(key)
-                parsed = XApiCollector._safe_int(value)
+                parsed = safe_int(value)
                 if parsed is not None:
                     return parsed
-        return XApiCollector._safe_int(tweet_payload.get("view_count"))
+        return safe_int(tweet_payload.get("view_count"))
 
     @staticmethod
     def _replied_to_tweet_id(tweet_payload: dict[str, Any]) -> str | None:
@@ -478,7 +506,7 @@ class XApiCollector(BaseCollector):
     def _search_window_warnings(self) -> list[str]:
         if self.settings.search_scope != "recent" or not self.config.date_range.start:
             return []
-        start_dt = self._parse_config_datetime(self.config.date_range.start, end_of_day=False)
+        start_dt = parse_configured_datetime(self.config.date_range.start, end_of_day=False)
         if start_dt is None:
             return []
         cutoff_dt = datetime.now(tz=UTC) - timedelta(days=7)
@@ -494,42 +522,18 @@ class XApiCollector(BaseCollector):
     def _start_time(self) -> str | None:
         if not self.config.date_range.start:
             return None
-        parsed = self._parse_config_datetime(self.config.date_range.start, end_of_day=False)
+        parsed = parse_configured_datetime(self.config.date_range.start, end_of_day=False)
         return self._iso_z(parsed) if parsed else None
 
     def _end_time(self) -> str | None:
         if not self.config.date_range.end:
             return None
-        parsed = self._parse_config_datetime(self.config.date_range.end, end_of_day=True)
+        parsed = parse_configured_datetime(self.config.date_range.end, end_of_day=True)
         return self._iso_z(parsed) if parsed else None
-
-    @staticmethod
-    def _parse_config_datetime(raw_value: str, *, end_of_day: bool) -> datetime | None:
-        try:
-            if "T" in raw_value:
-                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-            else:
-                parsed = datetime.fromisoformat(
-                    f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00"
-                )
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
 
     @staticmethod
     def _iso_z(value: datetime) -> str:
         return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-    @staticmethod
-    def _safe_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
 
     @retry(
         retry=retry_if_exception_type(httpx.HTTPError),

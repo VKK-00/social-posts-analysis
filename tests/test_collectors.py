@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import social_posts_analysis.collectors.facebook_web_interactions as facebook_web_interactions
 from social_posts_analysis.collectors.instagram_graph_api import InstagramGraphApiCollector
 from social_posts_analysis.collectors.instagram_web import InstagramWebCollector
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
@@ -20,6 +21,7 @@ from social_posts_analysis.collectors.x_web import XWebCollector
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import PostSnapshot, SourceSnapshot
 from social_posts_analysis.raw_store import RawSnapshotStore
+from social_posts_analysis.utils import stable_id
 
 
 def test_meta_api_collector_paginates_and_recurses_comments(project_config, tmp_path: Path, monkeypatch) -> None:
@@ -147,6 +149,35 @@ def test_public_web_select_post_permalink_prefers_specific_candidate_over_generi
     assert permalink == "https://www.facebook.com/reel/1178401624169743"
 
 
+def test_public_web_resolves_visible_share_origin_post_id_for_same_page(project_config) -> None:
+    project_config.source.url = "https://www.facebook.com/example-page/"
+    collector = PublicWebCollector(project_config)
+
+    origin_post_id = collector._resolve_visible_share_origin_post_id(
+        page_id="page-token",
+        origin_post_id="facebook:origin:99",
+        origin_permalink="https://www.facebook.com/example-page/posts/99",
+    )
+
+    assert origin_post_id == stable_id("page-token", "https://www.facebook.com/example-page/posts/99")
+
+
+def test_public_web_propagation_metadata_prefers_shared_permalink() -> None:
+    propagation_kind, origin_post_id, origin_external_id, origin_permalink = PublicWebCollector._propagation_metadata(
+        payload={
+            "shared_permalink": "https://www.facebook.com/example-page/posts/99",
+            "body_text": "Example Page shared a post.",
+        },
+        post_text="Example Page shared a post.",
+        post_permalink="https://www.facebook.com/example-page/posts/100",
+    )
+
+    assert propagation_kind == "share"
+    assert origin_post_id is None
+    assert origin_external_id is None
+    assert origin_permalink == "https://www.facebook.com/example-page/posts/99"
+
+
 def test_public_web_metric_parser_reads_numeric_counts() -> None:
     assert PublicWebCollector._extract_metric_count("44") == 44
     assert PublicWebCollector._extract_metric_count("87 comments") == 87
@@ -157,6 +188,36 @@ def test_public_web_comment_article_limit_grows_for_larger_threads() -> None:
     assert PublicWebCollector._comment_article_limit(0, aggressive=False) == 220
     assert PublicWebCollector._comment_article_limit(35, aggressive=True) == 320
     assert PublicWebCollector._comment_article_limit(120, aggressive=True) == 420
+
+
+def test_public_web_expand_comment_threads_respects_zero_time_budget(monkeypatch) -> None:
+    class FakeMouse:
+        def __init__(self) -> None:
+            self.wheels = 0
+
+        def wheel(self, x: int, y: int) -> None:
+            self.wheels += 1
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.mouse = FakeMouse()
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:
+            return None
+
+    monkeypatch.setattr(facebook_web_interactions, "count_article_nodes", lambda page: 0)
+    monkeypatch.setattr(facebook_web_interactions, "scroll_primary_comment_container", lambda page: False)
+    monkeypatch.setattr(facebook_web_interactions, "click_buttonish_text", lambda *args, **kwargs: 0)
+
+    page = FakePage()
+    facebook_web_interactions.expand_comment_threads(
+        page,
+        target_comment_count=100,
+        aggressive=True,
+        max_seconds=0.0,
+    )
+
+    assert page.mouse.wheels == 0
 
 
 def test_public_web_expansion_patterns_include_localized_variants() -> None:
@@ -332,6 +393,15 @@ class FakeReplyTo:
 class FakeForwardInfo:
     saved_from_msg_id: int | None = None
     from_name: str | None = None
+    saved_from_peer: object | None = None
+    from_id: object | None = None
+
+
+@dataclass
+class FakePeerRef:
+    channel_id: int | None = None
+    chat_id: int | None = None
+    user_id: int | None = None
 
 
 @dataclass
@@ -918,6 +988,40 @@ def test_telegram_web_collector_maps_public_discussion_comments(tmp_path: Path) 
     assert merged[0].comments[1].parent_comment_id == merged[0].comments[0].comment_id
 
 
+def test_telegram_web_collector_uses_forwarded_permalink_for_origin_post_id(tmp_path: Path) -> None:
+    collector = TelegramWebCollector(_telegram_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+    source_payload = {
+        "source_id": "example_channel",
+        "source_name": "Example Channel",
+        "source_url": "https://t.me/s/example_channel",
+        "messages": [
+            {
+                "message_token": "example_channel/11",
+                "message_id": "11",
+                "permalink": "https://t.me/example_channel/11",
+                "created_at": "2026-04-08T10:00:00+00:00",
+                "text": "Forwarded visible post",
+                "views": "123",
+                "has_media": False,
+                "media_type": None,
+                "author_name": "Example Channel",
+                "forwarded_from_name": "Origin Channel",
+                "forwarded_permalink": "https://t.me/origin_channel/99",
+                "forwarded_message_id": "99",
+                "reaction_breakdown": {},
+            }
+        ],
+    }
+
+    posts = collector._build_posts_from_payload(source_payload, raw_store)
+
+    assert posts[0].is_propagation is True
+    assert posts[0].origin_post_id == "telegram:origin_channel:99"
+    assert posts[0].origin_external_id == "99"
+    assert posts[0].origin_permalink == "https://t.me/origin_channel/99"
+
+
 def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkeypatch) -> None:
     collector = XWebCollector(_x_web_config())
     raw_store = RawSnapshotStore(tmp_path / "raw")
@@ -990,6 +1094,42 @@ def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkey
     assert replies[0].reactions == 4
 
 
+def test_x_web_collector_builds_origin_post_id_from_origin_permalink(tmp_path: Path) -> None:
+    collector = XWebCollector(_x_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+
+    posts = collector._build_posts_from_payload(
+        {
+            "posts": [
+                {
+                    "status_id": "201",
+                    "created_at": "2026-04-08T10:00:00Z",
+                    "text": "Quoted X post",
+                    "permalink": "https://x.com/example_account/status/201",
+                    "author_name": "Example Account",
+                    "author_username": "example_account",
+                    "reply_count": "1",
+                    "retweet_count": "0",
+                    "like_count": "3",
+                    "view_count": "100",
+                    "has_media": False,
+                    "media_type": None,
+                    "propagation_kind": "quote",
+                    "origin_status_id": "555",
+                    "origin_permalink": "https://x.com/origin_author/status/555",
+                }
+            ]
+        },
+        source_id="example_account",
+        source_name="Example Account",
+        raw_store=raw_store,
+    )
+
+    assert posts[0].is_propagation is True
+    assert posts[0].origin_post_id == "x:origin_author:555"
+    assert posts[0].origin_permalink == "https://x.com/origin_author/status/555"
+
+
 def test_x_web_collector_filters_profile_feed_to_source_author(tmp_path: Path) -> None:
     collector = XWebCollector(_x_web_config())
     raw_store = RawSnapshotStore(tmp_path / "raw")
@@ -1058,7 +1198,7 @@ def test_meta_api_collector_marks_shared_posts_as_propagation(project_config, tm
                         "created_time": "2026-04-01T10:00:00+00:00",
                         "permalink_url": "https://facebook.com/posts/2",
                         "status_type": "shared_story",
-                        "parent_id": "origin_99",
+                        "parent_id": "page_1_post_99",
                         "link": "https://facebook.com/origin/99",
                         "shares": {"count": 1},
                         "comments": {"summary": {"total_count": 0}},
@@ -1077,7 +1217,7 @@ def test_meta_api_collector_marks_shared_posts_as_propagation(project_config, tm
 
     assert manifest.posts[0].is_propagation is True
     assert manifest.posts[0].propagation_kind == "share"
-    assert manifest.posts[0].origin_post_id == "facebook:origin:origin_99"
+    assert manifest.posts[0].origin_post_id == "page_1_post_99"
     assert manifest.posts[0].origin_permalink == "https://facebook.com/origin/99"
 
 
@@ -1097,6 +1237,24 @@ def test_telegram_collector_marks_forwarded_posts_as_propagation(tmp_path: Path)
     assert snapshot.is_propagation is True
     assert snapshot.propagation_kind == "forward"
     assert snapshot.origin_post_id == "telegram:origin:99"
+    assert snapshot.origin_external_id == "99"
+
+
+def test_telegram_collector_uses_forward_peer_for_origin_post_id(tmp_path: Path) -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+    source_entity = FakeChat(id=1001, title="Example Channel", username="example_channel")
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+    message = FakeMessage(
+        id=8,
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        message="Forwarded channel post",
+        fwd_from=FakeForwardInfo(saved_from_msg_id=99, saved_from_peer=FakePeerRef(channel_id=777001)),
+    )
+
+    snapshot = collector._build_post_snapshot(message=message, source_entity=source_entity, raw_store=raw_store)
+
+    assert snapshot.is_propagation is True
+    assert snapshot.origin_post_id == "telegram:777001:99"
     assert snapshot.origin_external_id == "99"
 
 
@@ -1127,15 +1285,19 @@ def test_x_api_collector_marks_quote_posts_as_propagation(tmp_path: Path) -> Non
             },
             "referenced_tweets": [{"type": "quoted", "id": "555"}],
         },
-        includes={"users": {}, "media": {}},
+        includes={
+            "users": {"77": {"id": "77", "username": "origin_author", "name": "Origin Author"}},
+            "tweets": {"555": {"id": "555", "author_id": "77"}},
+            "media": {},
+        },
         source_snapshot=source_snapshot,
         raw_store=raw_store,
     )
 
     assert post.is_propagation is True
     assert post.propagation_kind == "quote"
-    assert post.origin_post_id == "x:origin:555"
-    assert post.origin_permalink == "https://x.com/i/status/555"
+    assert post.origin_post_id == "x:77:555"
+    assert post.origin_permalink == "https://x.com/origin_author/status/555"
 
 
 def test_threads_api_collector_collects_posts_and_replies(tmp_path: Path, monkeypatch) -> None:

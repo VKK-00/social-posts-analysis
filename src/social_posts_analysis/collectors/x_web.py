@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-import tempfile
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -22,6 +17,8 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import parse_compact_number, slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import RangeFilter
+from .web_runtime import WebCollectorRuntime, ensure_playwright_available, open_web_runtime, scroll_page
 
 
 class XWebCollector(BaseCollector):
@@ -30,12 +27,10 @@ class XWebCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.x_web
+        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
             raise CollectorUnavailableError("X web collector is disabled in config.collector.x_web.enabled.")
-        try:
-            from playwright.sync_api import sync_playwright  # noqa: F401
-        except ImportError as exc:
-            raise CollectorUnavailableError("X web collector requires the playwright package and browser install.") from exc
+        ensure_playwright_available("X web collector requires the playwright package and browser install.")
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
         from playwright.sync_api import sync_playwright
@@ -46,10 +41,10 @@ class XWebCollector(BaseCollector):
         ]
 
         with sync_playwright() as playwright:
-            browser, context, temp_profile_dir, context_warnings = self._open_collection_context(playwright)
-            warnings.extend(context_warnings)
+            runtime = self._open_collection_context(playwright)
+            warnings.extend(runtime.warnings)
             try:
-                page = context.new_page()
+                page = runtime.context.new_page()
                 page.goto(profile_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
                 self._dismiss_cookie_banner(page)
                 self._scroll_timeline(page)
@@ -61,7 +56,7 @@ class XWebCollector(BaseCollector):
                 posts = self._build_posts_from_payload(profile_payload, source_id=source_id, source_name=source_name, raw_store=raw_store)
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
-                    replies = self._collect_replies_for_post(context=context, post=post, raw_store=raw_store)
+                    replies = self._collect_replies_for_post(context=runtime.context, post=post, raw_store=raw_store)
                     if post.comments_count > 0 and not replies:
                         warnings.append(
                             f"X web detail page for {post.post_id} exposed reply counter {post.comments_count}, but no reply articles were visible."
@@ -70,11 +65,7 @@ class XWebCollector(BaseCollector):
                         post.model_copy(update={"comments": replies, "comments_count": max(post.comments_count, len(replies))})
                     )
             finally:
-                context.close()
-                if browser is not None:
-                    browser.close()
-                if temp_profile_dir is not None:
-                    shutil.rmtree(temp_profile_dir, ignore_errors=True)
+                runtime.close()
 
         source_snapshot = SourceSnapshot(
             platform="x",
@@ -121,16 +112,17 @@ class XWebCollector(BaseCollector):
             }
             raw_path = raw_store.write_json("x_web_posts", slugify(post_id), item)
             origin_external_id = item.get("origin_status_id") or None
+            origin_permalink = item.get("origin_permalink") or (
+                f"https://x.com/i/status/{origin_external_id}" if origin_external_id else None
+            )
             posts.append(
                 PostSnapshot(
                     post_id=post_id,
                     platform="x",
                     source_id=source_id,
-                    origin_post_id=f"x:origin:{origin_external_id}" if origin_external_id else None,
+                    origin_post_id=self._origin_post_id(origin_external_id, origin_permalink),
                     origin_external_id=origin_external_id,
-                    origin_permalink=item.get("origin_permalink") or (
-                        f"https://x.com/i/status/{origin_external_id}" if origin_external_id else None
-                    ),
+                    origin_permalink=origin_permalink,
                     propagation_kind=item.get("propagation_kind"),
                     is_propagation=bool(item.get("propagation_kind")),
                     created_at=item.get("created_at"),
@@ -327,67 +319,16 @@ class XWebCollector(BaseCollector):
         )
         return payload
 
-    def _open_collection_context(self, playwright: Any) -> tuple[Any | None, Any, Path | None, list[str]]:
-        if self._uses_authenticated_browser():
-            context, temp_profile_dir, warnings = self._open_authenticated_context(playwright)
-            return None, context, temp_profile_dir, warnings
-        browser = playwright.chromium.launch(headless=self.settings.headless, channel=self.settings.browser_channel)
-        context = browser.new_context(locale="en-US", viewport={"width": 1400, "height": 1800})
-        return browser, context, None, []
-
-    def _open_authenticated_context(self, playwright: Any) -> tuple[Any, Path | None, list[str]]:
-        auth_settings = self.settings.authenticated_browser
-        source_user_data_dir = self._resolve_authenticated_user_data_dir()
-        profile_directory = auth_settings.profile_directory
-        launch_user_data_dir = source_user_data_dir
-        temp_profile_dir: Path | None = None
-        warnings: list[str] = []
-        if auth_settings.copy_profile:
-            temp_profile_dir = self._prepare_temp_profile_directory(source_user_data_dir, profile_directory)
-            launch_user_data_dir = temp_profile_dir
-            warnings.append(f"Using authenticated browser profile snapshot from {source_user_data_dir} ({profile_directory}).")
-
-        args = [f"--profile-directory={profile_directory}"] if profile_directory else []
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(launch_user_data_dir),
-            channel=self._resolve_authenticated_browser_channel(),
+    def _open_collection_context(self, playwright: Any) -> WebCollectorRuntime:
+        return open_web_runtime(
+            playwright,
             headless=self.settings.headless,
-            locale="en-US",
+            browser_channel=self.settings.browser_channel,
             viewport={"width": 1400, "height": 1800},
-            args=args,
+            authenticated_browser=self.settings.authenticated_browser,
+            profile_copy_prefix="x-web-profile-",
+            custom_user_data_error="Authenticated X browser mode requires collector.x_web.authenticated_browser.user_data_dir.",
         )
-        return context, temp_profile_dir, warnings
-
-    def _resolve_authenticated_user_data_dir(self) -> Path:
-        auth_settings = self.settings.authenticated_browser
-        if auth_settings.user_data_dir:
-            resolved_path = Path(os.path.expandvars(auth_settings.user_data_dir)).expanduser()
-        elif auth_settings.browser == "chrome":
-            resolved_path = Path(os.getenv("LOCALAPPDATA", "")) / "Google/Chrome/User Data"
-        elif auth_settings.browser == "edge":
-            resolved_path = Path(os.getenv("LOCALAPPDATA", "")) / "Microsoft/Edge/User Data"
-        else:
-            raise CollectorUnavailableError("Authenticated X browser mode requires collector.x_web.authenticated_browser.user_data_dir.")
-        if not resolved_path.exists():
-            raise CollectorUnavailableError(f"Authenticated browser user data dir does not exist: {resolved_path}")
-        return resolved_path
-
-    def _prepare_temp_profile_directory(self, user_data_dir: Path, profile_directory: str) -> Path:
-        temp_root = self.settings.authenticated_browser.temp_root_dir
-        temp_dir = Path(tempfile.mkdtemp(prefix="x-web-profile-", dir=temp_root))
-        profile_name = profile_directory or "Default"
-        shutil.copytree(user_data_dir / profile_name, temp_dir / profile_name, dirs_exist_ok=True)
-        for root_file in ("Local State", "First Run"):
-            source_path = user_data_dir / root_file
-            if source_path.exists():
-                shutil.copy2(source_path, temp_dir / root_file)
-        return temp_dir
-
-    def _resolve_authenticated_browser_channel(self) -> str | None:
-        browser_name = self.settings.authenticated_browser.browser
-        if browser_name == "custom":
-            return self.settings.browser_channel
-        return browser_name
 
     def _uses_authenticated_browser(self) -> bool:
         return self.settings.authenticated_browser.enabled
@@ -404,9 +345,13 @@ class XWebCollector(BaseCollector):
                 continue
 
     def _scroll_timeline(self, page: Any, *, passes: int | None = None) -> None:
-        for _ in range(passes or self.settings.max_scrolls):
-            page.mouse.wheel(0, 2600)
-            page.wait_for_timeout(self.settings.wait_after_scroll_ms)
+        scroll_page(
+            page,
+            max_scrolls=self.settings.max_scrolls,
+            wait_after_scroll_ms=self.settings.wait_after_scroll_ms,
+            passes=passes,
+            wheel_y=2600,
+        )
 
     def _resolve_profile_url(self) -> str:
         if self.config.source.url:
@@ -431,38 +376,22 @@ class XWebCollector(BaseCollector):
         raise CollectorUnavailableError("X web collector requires source.url, source.source_name, or source.source_id.")
 
     def _within_range(self, created_at: str | None) -> bool:
-        if created_at is None:
-            return False
-        try:
-            current = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=UTC)
-        start = self._parse_date(self.config.date_range.start, end_of_day=False)
-        end = self._parse_date(self.config.date_range.end, end_of_day=True)
-        if start and current < start:
-            return False
-        if end and current > end:
-            return False
-        return True
-
-    @staticmethod
-    def _parse_date(raw_value: str | None, *, end_of_day: bool) -> datetime | None:
-        if not raw_value:
-            return None
-        try:
-            if "T" in raw_value:
-                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-            else:
-                parsed = datetime.fromisoformat(f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00")
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+        return self.range_filter.contains(created_at, allow_missing=False)
 
     @staticmethod
     def _native_status_id(post_id: str) -> str:
         match = re.search(r":(\d+)$", post_id)
         return match.group(1) if match else post_id
+
+    @staticmethod
+    def _origin_post_id(origin_external_id: str | None, origin_permalink: str | None) -> str | None:
+        if not origin_external_id:
+            return None
+        if origin_permalink:
+            parsed = urlparse(origin_permalink)
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 3 and parts[1] == "status":
+                author_token = parts[0].lstrip("@")
+                if author_token and author_token != "i":
+                    return f"x:{author_token}:{origin_external_id}"
+        return f"x:origin:{origin_external_id}"

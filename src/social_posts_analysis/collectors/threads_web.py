@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-import os
-import shutil
-import tempfile
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from social_posts_analysis.config import ProjectConfig
@@ -19,6 +14,8 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import parse_compact_number, slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import RangeFilter
+from .web_runtime import WebCollectorRuntime, ensure_playwright_available, open_web_runtime, scroll_page
 
 
 class ThreadsWebCollector(BaseCollector):
@@ -27,12 +24,10 @@ class ThreadsWebCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.threads_web
+        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
             raise CollectorUnavailableError("Threads web collector is disabled in config.collector.threads_web.enabled.")
-        try:
-            from playwright.sync_api import sync_playwright  # noqa: F401
-        except ImportError as exc:
-            raise CollectorUnavailableError("Threads web collector requires the playwright package and browser install.") from exc
+        ensure_playwright_available("Threads web collector requires the playwright package and browser install.")
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
         from playwright.sync_api import sync_playwright
@@ -40,10 +35,10 @@ class ThreadsWebCollector(BaseCollector):
         warnings = ["Threads web extraction is best-effort and reply visibility depends on the current public web UI."]
         profile_url = self._resolve_profile_url()
         with sync_playwright() as playwright:
-            browser, context, temp_profile_dir, context_warnings = self._open_collection_context(playwright)
-            warnings.extend(context_warnings)
+            runtime = self._open_collection_context(playwright)
+            warnings.extend(runtime.warnings)
             try:
-                page = context.new_page()
+                page = runtime.context.new_page()
                 page.goto(profile_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
                 self._scroll_timeline(page)
                 payload = self._extract_profile_payload(page)
@@ -53,16 +48,12 @@ class ThreadsWebCollector(BaseCollector):
                 posts = self._build_posts_from_payload(payload, source_id=source_id, source_name=source_name, raw_store=raw_store)
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
-                    replies = self._collect_replies_for_post(context=context, post=post, raw_store=raw_store)
+                    replies = self._collect_replies_for_post(context=runtime.context, post=post, raw_store=raw_store)
                     updated_posts.append(
                         post.model_copy(update={"comments": replies, "comments_count": max(post.comments_count, len(replies))})
                     )
             finally:
-                context.close()
-                if browser is not None:
-                    browser.close()
-                if temp_profile_dir is not None:
-                    shutil.rmtree(temp_profile_dir, ignore_errors=True)
+                runtime.close()
 
         source_snapshot = SourceSnapshot(
             platform="threads",
@@ -268,68 +259,25 @@ class ThreadsWebCollector(BaseCollector):
             """
         )
 
-    def _open_collection_context(self, playwright: Any) -> tuple[Any | None, Any, Path | None, list[str]]:
-        if self.settings.authenticated_browser.enabled:
-            context, temp_profile_dir, warnings = self._open_authenticated_context(playwright)
-            return None, context, temp_profile_dir, warnings
-        browser = playwright.chromium.launch(headless=self.settings.headless, channel=self.settings.browser_channel)
-        context = browser.new_context(locale="en-US", viewport={"width": 1400, "height": 1800})
-        return browser, context, None, []
-
-    def _open_authenticated_context(self, playwright: Any) -> tuple[Any, Path | None, list[str]]:
-        auth_settings = self.settings.authenticated_browser
-        user_data_dir = self._resolve_authenticated_user_data_dir()
-        profile_directory = auth_settings.profile_directory
-        temp_profile_dir: Path | None = None
-        launch_user_data_dir = user_data_dir
-        warnings: list[str] = []
-        if auth_settings.copy_profile:
-            temp_profile_dir = self._prepare_temp_profile_directory(user_data_dir, profile_directory)
-            launch_user_data_dir = temp_profile_dir
-            warnings.append(f"Using authenticated browser profile snapshot from {user_data_dir} ({profile_directory}).")
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(launch_user_data_dir),
-            channel=self._resolve_authenticated_browser_channel(),
+    def _open_collection_context(self, playwright: Any) -> WebCollectorRuntime:
+        return open_web_runtime(
+            playwright,
             headless=self.settings.headless,
-            locale="en-US",
+            browser_channel=self.settings.browser_channel,
             viewport={"width": 1400, "height": 1800},
-            args=[f"--profile-directory={profile_directory}"] if profile_directory else [],
+            authenticated_browser=self.settings.authenticated_browser,
+            profile_copy_prefix="threads-web-profile-",
+            custom_user_data_error="Threads authenticated browser mode requires collector.threads_web.authenticated_browser.user_data_dir.",
         )
-        return context, temp_profile_dir, warnings
-
-    def _resolve_authenticated_user_data_dir(self) -> Path:
-        auth = self.settings.authenticated_browser
-        if auth.user_data_dir:
-            path = Path(os.path.expandvars(auth.user_data_dir)).expanduser()
-        elif auth.browser == "chrome":
-            path = Path(os.getenv("LOCALAPPDATA", "")) / "Google/Chrome/User Data"
-        elif auth.browser == "edge":
-            path = Path(os.getenv("LOCALAPPDATA", "")) / "Microsoft/Edge/User Data"
-        else:
-            raise CollectorUnavailableError("Threads authenticated browser mode requires collector.threads_web.authenticated_browser.user_data_dir.")
-        if not path.exists():
-            raise CollectorUnavailableError(f"Authenticated browser user data dir does not exist: {path}")
-        return path
-
-    def _prepare_temp_profile_directory(self, user_data_dir: Path, profile_directory: str) -> Path:
-        temp_dir = Path(tempfile.mkdtemp(prefix="threads-web-profile-"))
-        shutil.copytree(user_data_dir / profile_directory, temp_dir / profile_directory, dirs_exist_ok=True)
-        for root_file in ("Local State", "First Run"):
-            source_path = user_data_dir / root_file
-            if source_path.exists():
-                shutil.copy2(source_path, temp_dir / root_file)
-        return temp_dir
-
-    def _resolve_authenticated_browser_channel(self) -> str | None:
-        browser_name = self.settings.authenticated_browser.browser
-        if browser_name == "custom":
-            return self.settings.browser_channel
-        return browser_name
 
     def _scroll_timeline(self, page: Any, *, passes: int | None = None) -> None:
-        for _ in range(passes or self.settings.max_scrolls):
-            page.mouse.wheel(0, 2600)
-            page.wait_for_timeout(self.settings.wait_after_scroll_ms)
+        scroll_page(
+            page,
+            max_scrolls=self.settings.max_scrolls,
+            wait_after_scroll_ms=self.settings.wait_after_scroll_ms,
+            passes=passes,
+            wheel_y=2600,
+        )
 
     def _resolve_profile_url(self) -> str:
         if self.config.source.url:
@@ -346,36 +294,7 @@ class ThreadsWebCollector(BaseCollector):
         raise CollectorUnavailableError("Threads web collector requires source.url, source.source_name, or source.source_id.")
 
     def _within_range(self, raw_value: str | None) -> bool:
-        if raw_value is None:
-            return False
-        try:
-            current = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=UTC)
-        start = self._parse_date(self.config.date_range.start, end_of_day=False)
-        end = self._parse_date(self.config.date_range.end, end_of_day=True)
-        if start and current < start:
-            return False
-        if end and current > end:
-            return False
-        return True
-
-    @staticmethod
-    def _parse_date(raw_value: str | None, *, end_of_day: bool) -> datetime | None:
-        if not raw_value:
-            return None
-        try:
-            if "T" in raw_value:
-                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-            else:
-                parsed = datetime.fromisoformat(f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00")
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+        return self.range_filter.contains(raw_value, allow_missing=False)
 
     @staticmethod
     def _native_status_id(post_id: str) -> str:

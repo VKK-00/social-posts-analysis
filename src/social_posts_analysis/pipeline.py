@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from social_posts_analysis.collectors.x_api import XApiCollector
 from social_posts_analysis.collectors.x_web import XWebCollector
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import CollectionManifest
+from social_posts_analysis.normalization.merge import load_manifest, manifest_merge_key
 from social_posts_analysis.paths import ProjectPaths
 from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import make_run_id
@@ -48,6 +50,11 @@ class CollectionService:
 
     def _run_single(self, resolved_run_id: str) -> CollectionManifest:
         run_dir = self.paths.run_raw_dir(resolved_run_id)
+        existing_manifest = self._load_existing_manifest(resolved_run_id)
+        if existing_manifest and manifest_merge_key(existing_manifest) == self._current_request_key():
+            return existing_manifest
+        if existing_manifest and run_dir.exists():
+            shutil.rmtree(run_dir)
         raw_store = RawSnapshotStore(run_dir)
 
         warnings: list[str] = []
@@ -58,6 +65,12 @@ class CollectionService:
         for index, collector in enumerate(collectors):
             try:
                 manifest = collector.collect(resolved_run_id, raw_store)
+                manifest = manifest.model_copy(
+                    update={
+                        "requested_date_start": self.config.date_range.start,
+                        "requested_date_end": self.config.date_range.end,
+                    }
+                )
                 manifest.warnings = [*warnings, *manifest.warnings]
                 manifest.fallback_used = index > 0
                 self._write_manifest(run_dir, manifest)
@@ -112,6 +125,25 @@ class CollectionService:
         manifest_path = run_dir / "manifest.json"
         manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
 
+    def _load_existing_manifest(self, run_id: str) -> CollectionManifest | None:
+        manifest_path = self.paths.run_raw_dir(run_id) / "manifest.json"
+        if not manifest_path.exists():
+            return None
+        return load_manifest(self.paths, run_id)
+
+    def _current_request_key(self) -> tuple[str, str, str, str, str, str, str]:
+        source = self.config.source
+        identity = source.source_id or source.url or source.source_name or ""
+        return (
+            source.platform,
+            identity,
+            source.url or "",
+            source.source_name or "",
+            self.config.collector.mode,
+            self.config.date_range.start or "",
+            self.config.date_range.end or "",
+        )
+
 
 class PipelineRunner:
     def __init__(self, config: ProjectConfig, paths: ProjectPaths) -> None:
@@ -122,12 +154,16 @@ class PipelineRunner:
         collection_service = CollectionService(self.config, self.paths)
         collection_manifests = collection_service.run_many(run_id=run_id, passes=self.config.collector.multi_pass_runs)
         collection_manifest = collection_manifests[-1]
+        source_run_ids = [manifest.run_id for manifest in collection_manifests]
 
         from social_posts_analysis.analysis.service import AnalysisService
         from social_posts_analysis.normalize import NormalizationService
         from social_posts_analysis.reporting.service import ReportService, ReviewExportService
 
-        NormalizationService(self.config, self.paths).run(run_id=collection_manifest.run_id)
+        NormalizationService(self.config, self.paths).run(
+            run_id=collection_manifest.run_id,
+            source_run_ids=source_run_ids,
+        )
         AnalysisService(self.config, self.paths).run(run_id=collection_manifest.run_id)
         ReviewExportService(self.config, self.paths).run(run_id=collection_manifest.run_id)
         report_files = ReportService(self.config, self.paths).run(run_id=collection_manifest.run_id)

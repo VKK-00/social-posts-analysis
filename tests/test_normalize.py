@@ -80,3 +80,75 @@ def test_normalization_merges_recent_runs_into_snapshot(project_root: Path, proj
 
     assert comments.height == 3
     assert collection_runs["source_run_count"][0] == 2
+
+
+def test_normalization_merge_recent_runs_does_not_mix_different_sources(project_root: Path, project_config, project_paths) -> None:
+    source_dir = project_root / "data/raw/20260402T120000Z"
+
+    foreign_dir = project_root / "data/raw/20260402T121000Z"
+    shutil.copytree(source_dir, foreign_dir)
+    foreign_manifest_path = foreign_dir / "manifest.json"
+    foreign_manifest = json.loads(foreign_manifest_path.read_text(encoding="utf-8"))
+    foreign_manifest["run_id"] = "20260402T121000Z"
+    foreign_manifest["source"]["source_id"] = "page_2"
+    foreign_manifest["source"]["source_name"] = "Other Page"
+    foreign_manifest["source"]["source_url"] = "https://www.facebook.com/other-page"
+    foreign_manifest["posts"][0]["source_id"] = "page_2"
+    foreign_manifest["posts"][0]["post_id"] = "page_2_post_1"
+    foreign_manifest["posts"][1]["source_id"] = "page_2"
+    foreign_manifest["posts"][1]["post_id"] = "page_2_post_2"
+    foreign_manifest_path.write_text(json.dumps(foreign_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    target_dir = project_root / "data/raw/20260402T121500Z"
+    shutil.copytree(source_dir, target_dir)
+    target_manifest_path = target_dir / "manifest.json"
+    target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
+    target_manifest["run_id"] = "20260402T121500Z"
+    target_manifest_path.write_text(json.dumps(target_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    project_config.normalization.merge_recent_runs = 3
+    summary = NormalizationService(project_config, project_paths).run(run_id="20260402T121500Z")
+
+    assert summary["source_run_ids"] == ["20260402T120000Z", "20260402T121500Z"]
+
+
+def test_normalization_merge_recent_runs_does_not_mix_different_date_ranges(
+    project_root: Path,
+    project_config,
+    project_paths,
+) -> None:
+    source_dir = project_root / "data/raw/20260402T120000Z"
+
+    older_range_dir = project_root / "data/raw/20260402T121000Z"
+    shutil.copytree(source_dir, older_range_dir)
+    older_manifest_path = older_range_dir / "manifest.json"
+    older_manifest = json.loads(older_manifest_path.read_text(encoding="utf-8"))
+    older_manifest["run_id"] = "20260402T121000Z"
+    older_manifest["requested_date_start"] = "2026-03-01"
+    older_manifest["requested_date_end"] = "2026-03-15"
+    older_manifest_path.write_text(json.dumps(older_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    target_dir = project_root / "data/raw/20260402T121500Z"
+    shutil.copytree(source_dir, target_dir)
+    target_manifest_path = target_dir / "manifest.json"
+    target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
+    target_manifest["run_id"] = "20260402T121500Z"
+    target_manifest["requested_date_start"] = "2026-03-16"
+    target_manifest["requested_date_end"] = "2026-03-31"
+    target_manifest_path.write_text(json.dumps(target_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    project_config.normalization.merge_recent_runs = 3
+    summary = NormalizationService(project_config, project_paths).run(run_id="20260402T121500Z")
+
+    assert summary["source_run_ids"] == ["20260402T121500Z"]
+
+
+def test_normalization_reuses_existing_run_for_same_source_run_ids(project_config, project_paths) -> None:
+    service = NormalizationService(project_config, project_paths)
+
+    first_summary = service.run(run_id="20260402T120000Z")
+    second_summary = service.run(run_id="20260402T120000Z")
+
+    assert first_summary["reused_existing_run"] is False
+    assert second_summary["reused_existing_run"] is True
+    assert second_summary["source_run_ids"] == ["20260402T120000Z"]

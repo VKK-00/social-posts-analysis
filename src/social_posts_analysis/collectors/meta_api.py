@@ -299,7 +299,9 @@ class MetaApiCollector(BaseCollector):
         if origin_external_id is None and isinstance(attachment_target, dict) and attachment_target.get("id") is not None:
             origin_external_id = str(attachment_target.get("id"))
         origin_permalink = (attachment_data[0].get("url") if attachment_data else None) or payload.get("link")
-        origin_post_id = f"facebook:origin:{origin_external_id}" if origin_external_id else None
+        origin_post_id = None
+        if origin_external_id:
+            origin_post_id = origin_external_id if "_" in origin_external_id else f"facebook:origin:{origin_external_id}"
         return "share", origin_post_id, origin_external_id, origin_permalink
 
     @staticmethod

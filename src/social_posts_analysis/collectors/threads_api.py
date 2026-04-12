@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -18,6 +17,7 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import RangeFilter
 
 
 class ThreadsApiCollector(BaseCollector):
@@ -35,6 +35,7 @@ class ThreadsApiCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.threads_api
+        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
             raise CollectorUnavailableError("Threads API collector is disabled in config.collector.threads_api.enabled.")
         if not self.settings.access_token:
@@ -201,35 +202,7 @@ class ThreadsApiCollector(BaseCollector):
         return post_id.split(":")[-1]
 
     def _within_range(self, raw_value: object) -> bool:
-        if raw_value is None:
-            return False
-        current = self._parse_datetime(str(raw_value))
-        if current is None:
-            return False
-        start = self._parse_datetime(self.config.date_range.start, end_of_day=False)
-        end = self._parse_datetime(self.config.date_range.end, end_of_day=True)
-        if start and current < start:
-            return False
-        if end and current > end:
-            return False
-        return True
-
-    @staticmethod
-    def _parse_datetime(raw_value: str | None, *, end_of_day: bool = False) -> datetime | None:
-        if not raw_value:
-            return None
-        try:
-            if "T" in raw_value:
-                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-            else:
-                parsed = datetime.fromisoformat(
-                    f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00"
-                )
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+        return self.range_filter.contains(None if raw_value is None else str(raw_value), allow_missing=False)
 
     @retry(
         retry=retry_if_exception_type(httpx.HTTPError),

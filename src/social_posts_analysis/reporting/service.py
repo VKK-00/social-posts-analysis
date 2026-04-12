@@ -7,12 +7,27 @@ from typing import Any
 import markdown
 import polars as pl
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from openpyxl import Workbook
 
 from social_posts_analysis.analysis.metrics import compute_support_metrics
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.propagation import filter_origin_posts_frame
 from social_posts_analysis.utils import read_json
+
+from .exports import merge_existing_export, rows_to_frame, sanitize_export_frame, write_tabular_exports
+from .summaries import (
+    instagram_summary,
+    post_overview,
+    propagation_comment_overview,
+    propagation_overview,
+    propagation_summary,
+    reaction_breakdown_summary,
+    reply_depth_summary,
+    telegram_summary,
+    threads_summary,
+    top_propagated_items,
+    x_summary,
+)
 
 
 class ReviewExportService:
@@ -55,13 +70,13 @@ class ReviewExportService:
             pl.lit("").alias("note"),
         )
 
-        narrative_export = _merge_existing_export(
+        narrative_export = merge_existing_export(
             narrative_path,
             narrative_export,
             keys=["item_type", "cluster_id"],
             editable_columns=["action", "target_cluster_id", "new_label", "new_description"],
         )
-        stance_export = _merge_existing_export(
+        stance_export = merge_existing_export(
             stance_path,
             stance_export,
             keys=["item_type", "item_id", "side_id"],
@@ -132,11 +147,7 @@ class ReportService:
         posts = self._load_table("posts").filter(pl.col("run_id") == run_id)
         propagations = self._load_table("propagations").filter(pl.col("run_id") == run_id)
         comments = self._load_table("comments").filter(pl.col("run_id") == run_id)
-        origin_posts = (
-            posts.filter(~pl.col("is_propagation").fill_null(False))
-            if not posts.is_empty() and "is_propagation" in posts.columns
-            else posts
-        )
+        origin_posts = filter_origin_posts_frame(posts)
         languages = self._load_table("detected_languages").filter(pl.col("run_id") == run_id)
         clusters = self._load_table("narrative_clusters").filter(pl.col("run_id") == run_id)
         memberships = self._load_table("cluster_memberships").filter(pl.col("run_id") == run_id)
@@ -210,6 +221,7 @@ class ReportService:
         propagation_coverage_gaps = self._propagation_coverage_gaps(propagations, comments)
         post_overview = self._post_overview(origin_posts, comments)
         propagation_overview = self._propagation_overview(propagations, comments)
+        propagation_comments = self._propagation_comment_overview(comments, propagations)
         top_propagated_items = self._top_propagated_items(origin_posts, propagations)
         top_supportive_comments = self._top_comments_by_stance(
             stance_labels=stance_labels,
@@ -222,7 +234,7 @@ class ReportService:
             target_label="oppose",
         )
         reply_depth_summary = self._reply_depth_summary(comments)
-        warnings = self._data_quality_warnings(run_id, posts, comments, analysis_runs, collection_runs)
+        warnings = self._data_quality_warnings(run_id, posts, propagations, comments, analysis_runs, collection_runs)
 
         platform = collection_runs["platform"][0] if collection_runs.height and "platform" in collection_runs.columns else self.config.source.platform
         source_name = (
@@ -270,6 +282,7 @@ class ReportService:
             "per_propagation_support": self._rows_to_frame(propagation_support),
             "per_post_overview": post_overview,
             "per_propagation_overview": propagation_overview,
+            "per_propagation_comments": propagation_comments,
             "per_thread_conflict": self._rows_to_frame(conflict_rows),
             "post_narratives": self._sanitize_export_frame(self._rows_to_frame(post_cluster_rows)),
             "propagation_narratives": self._sanitize_export_frame(self._rows_to_frame(propagation_cluster_rows)),
@@ -279,6 +292,7 @@ class ReportService:
             "top_critical_comments": self._rows_to_frame(top_critical_comments),
             "coverage_gaps": self._rows_to_frame(coverage_gaps),
             "propagation_coverage_gaps": self._rows_to_frame(propagation_coverage_gaps),
+            "reply_depth_summary": self._rows_to_frame(reply_depth_summary),
             "top_propagated_items": self._rows_to_frame(top_propagated_items),
         }
         telegram_summary = self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
@@ -312,6 +326,7 @@ class ReportService:
             "coverage_gaps": coverage_gaps,
             "propagation_coverage_gaps": propagation_coverage_gaps,
             "top_propagated_items": top_propagated_items,
+            "propagation_comments": propagation_comments.head(20).to_dicts() if not propagation_comments.is_empty() else [],
             "top_supportive_comments": top_supportive_comments,
             "top_critical_comments": top_critical_comments,
             "reply_depth_summary": reply_depth_summary,
@@ -510,71 +525,13 @@ class ReportService:
         return rows
 
     def _post_overview(self, posts: pl.DataFrame, comments: pl.DataFrame) -> pl.DataFrame:
-        if posts.is_empty():
-            return pl.DataFrame()
-        extracted_counts = (
-            comments.group_by("parent_post_id").agg(pl.len().alias("extracted_comment_count"))
-            if not comments.is_empty()
-            else pl.DataFrame(schema={"parent_post_id": pl.String, "extracted_comment_count": pl.Int64})
-        )
-        return (
-            posts.select(
-                "post_id",
-                "created_at",
-                "permalink",
-                "reactions",
-                "shares",
-                "comments_count",
-                "views",
-                "forwards",
-                "reply_count",
-                "has_media",
-                "media_type",
-                pl.col("message").fill_null("").str.slice(0, 220).alias("post_excerpt"),
-            )
-            .join(extracted_counts, left_on="post_id", right_on="parent_post_id", how="left")
-            .with_columns(
-                pl.col("extracted_comment_count").fill_null(0),
-                (pl.col("comments_count") - pl.col("extracted_comment_count").fill_null(0)).alias("comment_gap"),
-            )
-            .sort("created_at", descending=True)
-        )
+        return post_overview(posts, comments)
 
     def _propagation_overview(self, propagations: pl.DataFrame, comments: pl.DataFrame) -> pl.DataFrame:
-        if propagations.is_empty():
-            return pl.DataFrame()
-        extracted_counts = (
-            comments.filter(pl.col("parent_entity_type") == "propagation")
-            .group_by("parent_entity_id")
-            .agg(pl.len().alias("extracted_comment_count"))
-            if not comments.is_empty()
-            else pl.DataFrame(schema={"parent_entity_id": pl.String, "extracted_comment_count": pl.Int64})
-        )
-        return (
-            propagations.select(
-                "propagation_id",
-                "origin_post_id",
-                "origin_external_id",
-                "propagation_kind",
-                "created_at",
-                "permalink",
-                "reactions",
-                "shares",
-                "comments_count",
-                "views",
-                "forwards",
-                "reply_count",
-                "has_media",
-                "media_type",
-                pl.col("message").fill_null("").str.slice(0, 220).alias("propagation_excerpt"),
-            )
-            .join(extracted_counts, left_on="propagation_id", right_on="parent_entity_id", how="left")
-            .with_columns(
-                pl.col("extracted_comment_count").fill_null(0),
-                (pl.col("comments_count") - pl.col("extracted_comment_count").fill_null(0)).alias("comment_gap"),
-            )
-            .sort("created_at", descending=True)
-        )
+        return propagation_overview(propagations, comments)
+
+    def _propagation_comment_overview(self, comments: pl.DataFrame, propagations: pl.DataFrame) -> pl.DataFrame:
+        return propagation_comment_overview(comments, propagations)
 
     def _telegram_summary(
         self,
@@ -582,116 +539,34 @@ class ReportService:
         comments: pl.DataFrame,
         collection_runs: pl.DataFrame,
     ) -> dict[str, Any]:
-        discussion_linked = (
-            bool(collection_runs["discussion_linked"][0])
-            if collection_runs.height and "discussion_linked" in collection_runs.columns
-            else False
-        )
-        filtered_service_message_count = (
-            int(collection_runs["filtered_service_message_count"][0])
-            if collection_runs.height and "filtered_service_message_count" in collection_runs.columns
-            else 0
-        )
-        return {
-            "discussion_linked": discussion_linked,
-            "filtered_service_message_count": filtered_service_message_count,
-            "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-            "total_forwards": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
-            "total_reply_count": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
-            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
-        }
+        return telegram_summary(posts, comments, collection_runs)
 
     def _x_summary(
         self,
         posts: pl.DataFrame,
         comments: pl.DataFrame,
     ) -> dict[str, Any]:
-        return {
-            "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-            "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
-            "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
-            "total_quotes": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
-            "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
-            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
-        }
+        return x_summary(posts, comments)
 
     def _threads_summary(
         self,
         posts: pl.DataFrame,
         comments: pl.DataFrame,
     ) -> dict[str, Any]:
-        return {
-            "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-            "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
-            "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
-            "total_quotes": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
-            "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
-            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
-        }
+        return threads_summary(posts, comments)
 
     def _instagram_summary(
         self,
         posts: pl.DataFrame,
         comments: pl.DataFrame,
     ) -> dict[str, Any]:
-        return {
-            "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
-            "total_comments_visible": int(posts["comments_count"].fill_null(0).sum())
-            if "comments_count" in posts.columns and posts.height
-            else 0,
-            "total_comments_extracted": comments.height,
-            "reels_count": int(posts.filter(pl.col("media_type").fill_null("").str.to_lowercase() == "reel").height)
-            if "media_type" in posts.columns
-            else 0,
-            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
-        }
+        return instagram_summary(posts, comments)
 
     def _propagation_summary(self, propagations: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any] | None:
-        if propagations.is_empty():
-            return None
-        comment_counts = (
-            comments.filter(pl.col("parent_entity_type") == "propagation").group_by("parent_entity_id").agg(pl.len().alias("count"))
-            if not comments.is_empty()
-            else pl.DataFrame(schema={"parent_entity_id": pl.String, "count": pl.Int64})
-        )
-        kind_counts = (
-            propagations.group_by("propagation_kind").agg(pl.len().alias("count")).sort("count", descending=True).to_dicts()
-            if "propagation_kind" in propagations.columns
-            else []
-        )
-        return {
-            "total_instances": propagations.height,
-            "with_comments": int(comment_counts.height),
-            "kinds": kind_counts,
-        }
+        return propagation_summary(propagations, comments)
 
     def _top_propagated_items(self, posts: pl.DataFrame, propagations: pl.DataFrame) -> list[dict[str, Any]]:
-        if propagations.is_empty():
-            return []
-        counts = (
-            propagations.filter(pl.col("origin_post_id").is_not_null() & (pl.col("origin_post_id") != ""))
-            .group_by("origin_post_id")
-            .agg(
-                pl.len().alias("propagation_count"),
-                pl.col("comments_count").fill_null(0).sum().alias("propagation_comment_count"),
-            )
-            .sort("propagation_count", descending=True)
-            .head(10)
-        )
-        post_lookup = {row["post_id"]: row for row in posts.to_dicts()}
-        rows: list[dict[str, Any]] = []
-        for row in counts.to_dicts():
-            origin_post = post_lookup.get(row["origin_post_id"], {})
-            rows.append(
-                {
-                    "origin_post_id": row["origin_post_id"],
-                    "propagation_count": row["propagation_count"],
-                    "propagation_comment_count": row["propagation_comment_count"],
-                    "origin_excerpt": (origin_post.get("message") or "")[:220],
-                    "origin_permalink": origin_post.get("permalink"),
-                }
-            )
-        return rows
+        return top_propagated_items(posts, propagations)
 
     def _top_comments_by_stance(
         self,
@@ -727,19 +602,13 @@ class ReportService:
         ]
 
     def _reply_depth_summary(self, comments: pl.DataFrame) -> list[dict[str, Any]]:
-        if comments.is_empty():
-            return []
-        return (
-            comments.group_by("depth")
-            .agg(pl.len().alias("count"))
-            .sort("depth")
-            .to_dicts()
-        )
+        return reply_depth_summary(comments)
 
     def _data_quality_warnings(
         self,
         run_id: str,
         posts: pl.DataFrame,
+        propagations: pl.DataFrame,
         comments: pl.DataFrame,
         analysis_runs: pl.DataFrame,
         collection_runs: pl.DataFrame,
@@ -763,6 +632,8 @@ class ReportService:
             and not bool(collection_runs["discussion_linked"][0])
         ):
             warnings.append("Telegram source has no linked discussion chat; stance/support metrics are based on posts only where comments are absent.")
+        if not propagations.is_empty() and comments.filter(pl.col("parent_entity_type") == "propagation").is_empty():
+            warnings.append("Propagation instances were detected, but no comments were extracted from propagated copies in this run.")
         if comments.filter(pl.col("message").fill_null("").str.len_chars() == 0).height > 0:
             warnings.append("Some comments were collected without message text.")
         if posts.filter(pl.col("message").fill_null("").str.len_chars() == 0).height > 0:
@@ -774,128 +645,43 @@ class ReportService:
         return list(dict.fromkeys(warnings))
 
     def _reaction_breakdown_summary(self, posts: pl.DataFrame, comments: pl.DataFrame) -> list[dict[str, Any]]:
-        totals: dict[str, int] = {}
-        for frame in (posts, comments):
-            if frame.is_empty() or "reaction_breakdown_json" not in frame.columns:
-                continue
-            for raw_value in frame["reaction_breakdown_json"].fill_null("").to_list():
-                if not raw_value:
-                    continue
-                try:
-                    payload = json.loads(raw_value)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                for key, value in payload.items():
-                    totals[str(key)] = totals.get(str(key), 0) + int(value or 0)
-        return [
-            {"reaction": reaction, "count": count}
-            for reaction, count in sorted(totals.items(), key=lambda item: item[1], reverse=True)
-        ]
+        return reaction_breakdown_summary(posts, comments)
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
         return pl.read_parquet(path) if path.exists() else pl.DataFrame()
 
     def _write_tabular_exports(self, run_id: str, export_tables: dict[str, pl.DataFrame]) -> list[Path]:
-        export_root = self.paths.reports_root / f"report_{run_id}_tables"
-        export_root.mkdir(parents=True, exist_ok=True)
-
-        csv_paths: list[Path] = []
-        for table_name, frame in export_tables.items():
-            csv_path = export_root / f"{table_name}.csv"
-            self._sanitize_export_frame(frame).write_csv(csv_path)
-            csv_paths.append(csv_path)
-
-        workbook_path = self.paths.reports_root / f"report_{run_id}.xlsx"
-        workbook = Workbook()
-        default_sheet = workbook.active
-        workbook.remove(default_sheet)
-        for table_name, frame in export_tables.items():
-            worksheet = workbook.create_sheet(title=self._sheet_name(table_name))
-            sanitized = self._sanitize_export_frame(frame)
-            worksheet.append(list(sanitized.columns))
-            for row in sanitized.iter_rows():
-                worksheet.append([self._excel_cell_value(value) for value in row])
-        workbook.save(workbook_path)
-        return [*csv_paths, workbook_path]
+        return write_tabular_exports(self.paths, run_id, export_tables)
 
     @staticmethod
     def _rows_to_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
-        return pl.DataFrame(rows) if rows else pl.DataFrame()
+        return rows_to_frame(rows)
 
     @staticmethod
     def _sanitize_export_frame(frame: pl.DataFrame) -> pl.DataFrame:
-        if frame.is_empty():
-            return frame
-        expressions: list[pl.Expr] = []
-        for column_name, dtype in frame.schema.items():
-            base_type = dtype.base_type() if hasattr(dtype, "base_type") else None
-            if base_type is pl.List:
-                expressions.append(
-                    pl.col(column_name).map_elements(
-                        ReportService._json_list_cell,
-                        return_dtype=pl.String,
-                    ).alias(column_name)
-                )
-            elif base_type is pl.Struct:
-                expressions.append(
-                    pl.col(column_name).map_elements(
-                        ReportService._json_object_cell,
-                        return_dtype=pl.String,
-                    ).alias(column_name)
-                )
-            else:
-                expressions.append(pl.col(column_name))
-        return frame.select(expressions)
+        return sanitize_export_frame(frame)
 
     @staticmethod
     def _sheet_name(name: str) -> str:
-        trimmed = name[:31]
-        return trimmed or "sheet"
+        from .exports import sheet_name
+
+        return sheet_name(name)
 
     @staticmethod
     def _excel_cell_value(value: Any) -> Any:
-        if value is None:
-            return ""
-        if isinstance(value, (list, dict)):
-            return json.dumps(value, ensure_ascii=False)
-        return value
+        from .exports import excel_cell_value
+
+        return excel_cell_value(value)
 
     @staticmethod
     def _json_list_cell(value: Any) -> str:
-        if value is None:
-            return "[]"
-        if isinstance(value, pl.Series):
-            return json.dumps(value.to_list(), ensure_ascii=False)
-        if isinstance(value, tuple):
-            return json.dumps(list(value), ensure_ascii=False)
-        return json.dumps(value, ensure_ascii=False)
+        from .exports import json_list_cell
+
+        return json_list_cell(value)
 
     @staticmethod
     def _json_object_cell(value: Any) -> str:
-        if value is None:
-            return "{}"
-        if isinstance(value, pl.Series):
-            return json.dumps(value.to_list(), ensure_ascii=False)
-        return json.dumps(value, ensure_ascii=False)
+        from .exports import json_object_cell
 
-
-def _merge_existing_export(path: Path, current: pl.DataFrame, keys: list[str], editable_columns: list[str]) -> pl.DataFrame:
-    if not path.exists():
-        return current
-    existing = pl.read_csv(path)
-    editable_columns = [column for column in editable_columns if column in existing.columns and column in current.columns]
-    if not editable_columns:
-        return current
-    merged = current.join(existing.select([*keys, *editable_columns]), on=keys, how="left", suffix="_existing")
-    for column in editable_columns:
-        if f"{column}_existing" in merged.columns:
-            merged = merged.with_columns(
-                pl.when(pl.col(f"{column}_existing").is_not_null() & (pl.col(f"{column}_existing") != ""))
-                .then(pl.col(f"{column}_existing"))
-                .otherwise(pl.col(column))
-                .alias(column)
-            ).drop(f"{column}_existing")
-    return merged
+        return json_object_cell(value)

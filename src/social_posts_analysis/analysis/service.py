@@ -8,12 +8,13 @@ import polars as pl
 
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.propagation import filter_origin_posts_frame
 
+from .cache import AnalysisCacheStore
 from .clustering import NarrativeClusterer
 from .language import LanguageDetector
 from .metrics import compute_support_metrics
 from .providers import build_providers
-from .stance import StanceAnalyzer
 
 
 class AnalysisService:
@@ -92,21 +93,17 @@ class AnalysisService:
         posts = self._load_table("posts").filter(pl.col("run_id") == resolved_run_id)
         propagations = self._load_table("propagations").filter(pl.col("run_id") == resolved_run_id)
         comments = self._load_table("comments").filter(pl.col("run_id") == resolved_run_id)
-        origin_posts = (
-            posts.filter(~pl.col("is_propagation").fill_null(False))
-            if not posts.is_empty() and "is_propagation" in posts.columns
-            else posts
-        )
+        origin_posts = filter_origin_posts_frame(posts)
 
         detector = LanguageDetector(self.config.analysis.languages)
         providers = build_providers(self.config.providers.embeddings, self.config.providers.llm)
+        cache_store = AnalysisCacheStore(self.config, self.paths)
         clusterer = NarrativeClusterer(
             llm_provider=providers.llm,
             exemplar_count=self.config.analysis.exemplar_count,
             min_cluster_size=self.config.analysis.min_cluster_size,
             min_samples=self.config.analysis.min_samples,
         )
-        stance_analyzer = StanceAnalyzer(providers.llm, self.config.sides)
 
         post_items = self._items_from_frame(origin_posts, "post")
         propagation_items = self._items_from_frame(propagations, "propagation")
@@ -116,9 +113,27 @@ class AnalysisService:
         language_rows.extend(self._detect_languages(propagation_items, detector, resolved_run_id))
         language_rows.extend(self._detect_languages(comment_items, detector, resolved_run_id))
 
-        post_embeddings = providers.embeddings.embed_texts([item["text"] for item in post_items])
-        propagation_embeddings = providers.embeddings.embed_texts([item["text"] for item in propagation_items])
-        comment_embeddings = providers.embeddings.embed_texts([item["text"] for item in comment_items])
+        post_embeddings = cache_store.embedding_matrix(
+            post_items,
+            provider_name=providers.embeddings.name,
+            embed_many=providers.embeddings.embed_texts,
+            batch_size=self.config.analysis.batch_size,
+            dimension=self.config.providers.embeddings.dimension,
+        )
+        propagation_embeddings = cache_store.embedding_matrix(
+            propagation_items,
+            provider_name=providers.embeddings.name,
+            embed_many=providers.embeddings.embed_texts,
+            batch_size=self.config.analysis.batch_size,
+            dimension=self.config.providers.embeddings.dimension,
+        )
+        comment_embeddings = cache_store.embedding_matrix(
+            comment_items,
+            provider_name=providers.embeddings.name,
+            embed_many=providers.embeddings.embed_texts,
+            batch_size=self.config.analysis.batch_size,
+            dimension=self.config.providers.embeddings.dimension,
+        )
 
         post_clusters, post_memberships = clusterer.cluster_items("post", post_items, post_embeddings, resolved_run_id)
         propagation_clusters, propagation_memberships = clusterer.cluster_items(
@@ -134,9 +149,34 @@ class AnalysisService:
             resolved_run_id,
         )
 
-        stance_rows = stance_analyzer.label_items("post", post_items, resolved_run_id)
-        stance_rows.extend(stance_analyzer.label_items("propagation", propagation_items, resolved_run_id))
-        stance_rows.extend(stance_analyzer.label_items("comment", comment_items, resolved_run_id))
+        stance_rows = self._label_items_with_cache(
+            cache_store=cache_store,
+            llm_name=providers.llm.name,
+            classify_one=providers.llm.classify_stance,
+            item_type="post",
+            items=post_items,
+            run_id=resolved_run_id,
+        )
+        stance_rows.extend(
+            self._label_items_with_cache(
+                cache_store=cache_store,
+                llm_name=providers.llm.name,
+                classify_one=providers.llm.classify_stance,
+                item_type="propagation",
+                items=propagation_items,
+                run_id=resolved_run_id,
+            )
+        )
+        stance_rows.extend(
+            self._label_items_with_cache(
+                cache_store=cache_store,
+                llm_name=providers.llm.name,
+                classify_one=providers.llm.classify_stance,
+                item_type="comment",
+                items=comment_items,
+                run_id=resolved_run_id,
+            )
+        )
 
         support_metrics = compute_support_metrics(
             pl.DataFrame(stance_rows) if stance_rows else pl.DataFrame(),
@@ -238,6 +278,24 @@ class AnalysisService:
             combined = combined.unique(subset=key_columns, keep="last")
         combined.write_parquet(path)
         return path
+
+    def _label_items_with_cache(
+        self,
+        *,
+        cache_store: AnalysisCacheStore,
+        llm_name: str,
+        classify_one: Any,
+        item_type: str,
+        items: list[dict[str, Any]],
+        run_id: str,
+    ) -> list[dict[str, Any]]:
+        cached_rows = cache_store.stance_predictions(
+            items,
+            llm_name=llm_name,
+            sides=self.config.sides,
+            classify_one=classify_one,
+        )
+        return [{**row, "run_id": run_id, "item_type": item_type} for row in cached_rows]
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"

@@ -20,6 +20,8 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import RangeFilter, parse_configured_datetime
+from .value_utils import safe_int
 
 
 @dataclass(slots=True)
@@ -34,6 +36,7 @@ class TelegramMtprotoCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.telegram_mtproto
+        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
             raise CollectorUnavailableError("Telegram MTProto collector is disabled in config.collector.telegram_mtproto.enabled.")
         if not self.settings.session_file:
@@ -263,7 +266,7 @@ class TelegramMtprotoCollector(BaseCollector):
         reaction_breakdown = self._reaction_breakdown(message)
         source_id = self._stringify(self._entity_id(source_entity)) or self._source_reference()
         replies = getattr(message, "replies", None)
-        reply_count = self._safe_int(getattr(replies, "replies", None))
+        reply_count = safe_int(getattr(replies, "replies", None))
         propagation_kind, origin_post_id, origin_external_id, origin_permalink = self._propagation_metadata(message)
         return PostSnapshot(
             post_id=post_id,
@@ -279,8 +282,8 @@ class TelegramMtprotoCollector(BaseCollector):
             permalink=self._message_permalink(source_entity, message),
             reactions=sum(reaction_breakdown.values()),
             comments_count=reply_count or 0,
-            views=self._safe_int(getattr(message, "views", None)),
-            forwards=self._safe_int(getattr(message, "forwards", None)),
+            views=safe_int(getattr(message, "views", None)),
+            forwards=safe_int(getattr(message, "forwards", None)),
             reply_count=reply_count,
             has_media=bool(media_refs) or bool(getattr(message, "media", None)),
             media_type=self._media_type(message),
@@ -369,13 +372,41 @@ class TelegramMtprotoCollector(BaseCollector):
         saved_from_msg_id = getattr(forward_info, "saved_from_msg_id", None)
         if saved_from_msg_id is None and isinstance(forward_info, dict):
             saved_from_msg_id = forward_info.get("saved_from_msg_id")
+        peer_id = self._forward_peer_id(forward_info)
         from_name = getattr(forward_info, "from_name", None)
         if from_name is None and isinstance(forward_info, dict):
             from_name = forward_info.get("from_name")
 
-        origin_external_id = str(saved_from_msg_id or from_name or self._message_id(message))
-        origin_post_id = f"telegram:origin:{origin_external_id}"
+        if peer_id is not None and saved_from_msg_id is not None:
+            origin_post_id = f"telegram:{peer_id}:{saved_from_msg_id}"
+            origin_external_id = str(saved_from_msg_id)
+        else:
+            origin_external_id = str(saved_from_msg_id or from_name or self._message_id(message))
+            origin_post_id = f"telegram:origin:{origin_external_id}"
         return "forward", origin_post_id, origin_external_id, None
+
+    @staticmethod
+    def _forward_peer_id(forward_info: Any) -> str | None:
+        for attr in ("saved_from_peer", "from_id"):
+            peer = getattr(forward_info, attr, None)
+            if peer is None and isinstance(forward_info, dict):
+                peer = forward_info.get(attr)
+            if peer is None:
+                continue
+            peer_id = TelegramMtprotoCollector._peer_identifier(peer)
+            if peer_id:
+                return peer_id
+        return None
+
+    @staticmethod
+    def _peer_identifier(peer: Any) -> str | None:
+        for attr in ("channel_id", "chat_id", "user_id"):
+            value = getattr(peer, attr, None)
+            if value is None and isinstance(peer, dict):
+                value = peer.get(attr)
+            if value is not None:
+                return str(value)
+        return None
 
     @staticmethod
     def _message_id(message: Any) -> int:
@@ -459,15 +490,6 @@ class TelegramMtprotoCollector(BaseCollector):
         if "webpage" in media_type_name:
             return "link"
         return media.__class__.__name__
-
-    @staticmethod
-    def _safe_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
 
     def _reaction_breakdown(self, message: Any) -> dict[str, int]:
         breakdown: dict[str, int] = {}
@@ -556,32 +578,14 @@ class TelegramMtprotoCollector(BaseCollector):
         return value.astimezone(UTC).replace(microsecond=0).isoformat()
 
     def _within_range(self, value: datetime | None) -> bool:
-        if value is None:
-            return False
-        start = self._start_datetime()
-        end = self._end_datetime()
-        if start and value < start:
-            return False
-        if end and value > end:
-            return False
-        return True
+        return self.range_filter.contains(value, allow_missing=False)
 
     def _start_datetime(self) -> datetime | None:
         if not self.config.date_range.start:
             return None
-        return self._parse_datetime(self.config.date_range.start, end_of_day=False)
+        return parse_configured_datetime(self.config.date_range.start, end_of_day=False)
 
     def _end_datetime(self) -> datetime | None:
         if not self.config.date_range.end:
             return None
-        return self._parse_datetime(self.config.date_range.end, end_of_day=True)
-
-    @staticmethod
-    def _parse_datetime(raw_value: str, *, end_of_day: bool) -> datetime:
-        if "T" in raw_value:
-            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-        else:
-            parsed = datetime.fromisoformat(f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00")
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+        return parse_configured_datetime(self.config.date_range.end, end_of_day=True)

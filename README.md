@@ -8,11 +8,11 @@ The project stores all outputs locally and is built around one configured source
 
 Support is intentionally tiered. The project does not claim equal coverage across every network.
 
-- `facebook`: Meta API, public web, authenticated browser web, propagation via visible shares and share comments on a best-effort basis.
-- `telegram`: MTProto, public web, Bot API update queue, linked discussion trees, visible forwards on a best-effort basis.
-- `x`: official X API v2, public web, quotes and reposts as first-class propagation objects.
-- `threads`: official Threads API for owned-account scenarios, best-effort public web collector, quote/repost propagation where visible.
-- `instagram`: Instagram Graph API for owned professional accounts, best-effort public web collector, comments and reels supported, propagation coverage limited to observable surfaces.
+- `facebook`: supported. Meta API, public web, authenticated browser web, propagation via visible shares and share comments on a best-effort basis.
+- `telegram`: supported. MTProto, public web, Bot API update queue, linked discussion trees, visible forwards on a best-effort basis.
+- `x`: supported. Official X API v2, public web, quotes and reposts as first-class propagation objects.
+- `threads`: beta. Threads API for owned-account scenarios is wired in, but public web coverage is still unstable and can yield zero posts for a valid public profile depending on the current Threads UI.
+- `instagram`: beta. Instagram Graph API is wired in for owned professional accounts; public web collection currently behaves mostly as post-level extraction with shallow or empty public comments.
 
 ## What The Project Does
 
@@ -360,6 +360,13 @@ collector:
     enabled: true
 ```
 
+Expected public-web shape today:
+
+- posts: best-effort, can be `0` for a valid public profile
+- comments/replies: often `0`
+- propagations: only visible quote/repost surfaces
+- warning: current public Threads UI can hide feed content from the scraper
+
 ### Instagram Graph API
 
 ```yaml
@@ -391,6 +398,13 @@ collector:
   instagram_web:
     enabled: true
 ```
+
+Expected public-web shape today:
+
+- posts: usually available for public profiles
+- comments/replies: often shallow or `0`
+- propagations: only directly observable public surfaces
+- warning: public comment visibility depends on the current Instagram web UI
 
 ## Usage
 
@@ -507,13 +521,28 @@ GitHub Actions runs:
 - `mypy src`
 - `pytest -q`
 
+## Manual Acceptance Notes
+
+Validated smoke runs in this repository session on April 11, 2026:
+
+- `threads_web` against `https://www.threads.net/@zuck` completed successfully but returned `0` posts, `0` comments, and `0` propagations. The run status was `partial` and reported the expected best-effort public UI warning.
+- `instagram_web` against `https://www.instagram.com/zuck/` completed successfully and returned `12` posts, `0` comments, and `0` propagations. The run status was `partial`; the report also detected `3` reels.
+
+Not live-validated in this repository session:
+
+- `threads_api`
+- `instagram_graph_api`
+
+Reason:
+
+- the required access tokens were not configured in the local environment during this validation pass
+
 ## Coverage And Limits
 
 Propagation coverage is asymmetric by design.
 
-- strongest: `x`, `threads`
-- medium: `facebook`
-- partial or limited: `telegram`, `instagram`
+- strongest in this repository today: `facebook`, `telegram`, `x`
+- beta or partial today: `threads`, `instagram`
 
 Platform-specific limits:
 
@@ -526,8 +555,8 @@ Platform-specific limits:
 - Telegram Bot API only sees updates currently available to the bot. It does not backfill history.
 - X API reply coverage depends on the current search access window. With `search_scope: recent`, older replies can be missing.
 - X web collection can scrape public profile posts, but public reply visibility is often shallower than the reply counter suggests unless an authenticated browser session is used.
-- Threads API works best for owned-account scenarios. Threads web coverage is best-effort.
-- Instagram Graph API works for owned professional-account scenarios. Instagram web coverage is best-effort and public comments are often shallow.
+- Threads API works best for owned-account scenarios. Threads web coverage is best-effort and, in the April 11, 2026 public smoke run against `@zuck`, it returned zero visible posts.
+- Instagram Graph API works for owned professional-account scenarios. Instagram web coverage is best-effort and public comments are often shallow. In the April 11, 2026 public smoke run against `@zuck`, it returned 12 posts and zero extracted comments.
 - Instagram propagation coverage is intentionally conservative and limited to surfaces that are directly observable.
 - Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers produce better analytical quality.
 

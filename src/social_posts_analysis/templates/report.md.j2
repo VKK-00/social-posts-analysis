@@ -77,6 +77,8 @@ Instagram metrics:
 Propagation summary:
 - Instances found: `{{ propagation_summary.total_instances }}`
 - Instances with extracted comments: `{{ propagation_summary.with_comments }}`
+- Extracted propagation comments: `{{ propagation_summary.extracted_comments }}`
+- Visible propagation comment counter total: `{{ propagation_summary.visible_comment_total }}`
 {% if propagation_summary.kinds %}
 - By kind:
 {% for row in propagation_summary.kinds %}
@@ -223,6 +225,16 @@ Source runs:
 {% endfor %}
 {% else %}
 - No propagated instances were linked back to origin posts in this run.
+{% endif %}
+
+## Comments Under Propagations
+{% if propagation_comments %}
+{% for row in propagation_comments %}
+- Propagation `{{ row.parent_entity_id }}` / origin `{{ row.origin_post_id }}` / kind `{{ row.propagation_kind or "unknown" }}` / depth={{ row.depth }}
+  {{ row.comment_excerpt }}
+{% endfor %}
+{% else %}
+- No extracted comments were attached to propagated instances in this run.
 {% endif %}
 
 ## Language Mix

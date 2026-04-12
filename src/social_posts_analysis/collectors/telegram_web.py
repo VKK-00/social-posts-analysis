@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -17,6 +16,8 @@ from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import parse_compact_number, slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
+from .range_utils import RangeFilter
+from .web_runtime import ensure_playwright_available, open_web_runtime, scroll_page
 
 
 class TelegramWebCollector(BaseCollector):
@@ -25,12 +26,10 @@ class TelegramWebCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.telegram_web
+        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
             raise CollectorUnavailableError("Telegram web collector is disabled in config.collector.telegram_web.enabled.")
-        try:
-            from playwright.sync_api import sync_playwright  # noqa: F401
-        except ImportError as exc:
-            raise CollectorUnavailableError("Telegram web collector requires the playwright package and browser install.") from exc
+        ensure_playwright_available("Telegram web collector requires the playwright package and browser install.")
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
         from playwright.sync_api import sync_playwright
@@ -45,13 +44,15 @@ class TelegramWebCollector(BaseCollector):
         ]
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
+            runtime = open_web_runtime(
+                playwright,
                 headless=self.settings.headless,
-                channel=self.settings.browser_channel,
+                browser_channel=self.settings.browser_channel,
+                viewport={"width": 1400, "height": 2200},
+                custom_user_data_error="Telegram web collector does not support authenticated browser mode.",
             )
-            context = browser.new_context(locale="en-US", viewport={"width": 1400, "height": 2200})
             try:
-                source_page = context.new_page()
+                source_page = runtime.context.new_page()
                 source_page.goto(source_feed_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
                 self._scroll_feed(source_page)
                 source_payload = self._extract_feed_payload(source_page)
@@ -65,7 +66,7 @@ class TelegramWebCollector(BaseCollector):
                 if discussion_reference:
                     try:
                         discussion_feed_url = self._resolve_feed_url(discussion_reference, discussion_reference, discussion_reference)
-                        discussion_page = context.new_page()
+                        discussion_page = runtime.context.new_page()
                         discussion_page.goto(
                             discussion_feed_url,
                             wait_until="domcontentloaded",
@@ -88,8 +89,7 @@ class TelegramWebCollector(BaseCollector):
                         "Telegram web collector scraped posts only. Set source.telegram.discussion_chat_id to a public discussion feed for comments."
                     )
             finally:
-                context.close()
-                browser.close()
+                runtime.close()
 
         source_name = source_payload.get("source_name") or self.config.source.source_name or self._source_reference()
         source_id = source_payload.get("source_id") or self._source_reference()
@@ -127,14 +127,15 @@ class TelegramWebCollector(BaseCollector):
             reactions = item.get("reaction_breakdown") or {}
             post_id = f"telegram:{source_id}:{item['message_id']}"
             raw_path = raw_store.write_json("telegram_web_posts", slugify(post_id), item)
+            origin_post_id, origin_external_id, origin_permalink = self._forward_origin_metadata(item)
             posts.append(
                 PostSnapshot(
                     post_id=post_id,
                     platform="telegram",
                     source_id=source_id,
-                    origin_post_id=f"telegram:origin:{item.get('forwarded_message_id')}" if item.get("forwarded_message_id") else None,
-                    origin_external_id=str(item.get("forwarded_message_id")) if item.get("forwarded_message_id") else None,
-                    origin_permalink=item.get("forwarded_permalink"),
+                    origin_post_id=origin_post_id,
+                    origin_external_id=origin_external_id,
+                    origin_permalink=origin_permalink,
                     propagation_kind="forward" if item.get("forwarded_from_name") else None,
                     is_propagation=bool(item.get("forwarded_from_name")),
                     created_at=created_at,
@@ -307,6 +308,7 @@ class TelegramWebCollector(BaseCollector):
                 {
                     **item,
                     "permalink": self._normalize_permalink(item.get("permalink")),
+                    "forwarded_permalink": self._normalize_permalink(item.get("forwarded_permalink")),
                     "reply_permalink": self._normalize_permalink(item.get("reply_permalink")),
                     "reaction_breakdown": {
                         str(key): parse_compact_number(str(value))
@@ -323,41 +325,34 @@ class TelegramWebCollector(BaseCollector):
         }
 
     def _scroll_feed(self, page: Any) -> None:
-        for _ in range(self.settings.max_scrolls):
-            page.mouse.wheel(0, 3000)
-            page.wait_for_timeout(self.settings.wait_after_scroll_ms)
+        scroll_page(
+            page,
+            max_scrolls=self.settings.max_scrolls,
+            wait_after_scroll_ms=self.settings.wait_after_scroll_ms,
+            wheel_y=3000,
+        )
 
     def _within_range(self, created_at: str | None) -> bool:
-        if created_at is None:
-            return False
-        try:
-            current = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=UTC)
-        start = self._parse_date(self.config.date_range.start, end_of_day=False)
-        end = self._parse_date(self.config.date_range.end, end_of_day=True)
-        if start and current < start:
-            return False
-        if end and current > end:
-            return False
-        return True
+        return self.range_filter.contains(created_at, allow_missing=False)
 
-    @staticmethod
-    def _parse_date(raw_value: str | None, *, end_of_day: bool) -> datetime | None:
-        if not raw_value:
-            return None
-        try:
-            if "T" in raw_value:
-                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-            else:
-                parsed = datetime.fromisoformat(f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00")
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+    def _forward_origin_metadata(self, item: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        forwarded_permalink = self._normalize_permalink(item.get("forwarded_permalink"))
+        forwarded_message_id = str(item.get("forwarded_message_id") or "").strip() or None
+        if forwarded_permalink:
+            parsed = urlparse(forwarded_permalink)
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 2:
+                if parts[0] == "s" and len(parts) >= 3:
+                    source_token = parts[1]
+                    message_id = parts[2]
+                else:
+                    source_token = parts[0]
+                    message_id = parts[1]
+                if source_token and message_id:
+                    return f"telegram:{source_token}:{message_id}", message_id, forwarded_permalink
+        if forwarded_message_id:
+            return f"telegram:origin:{forwarded_message_id}", forwarded_message_id, forwarded_permalink
+        return None, None, forwarded_permalink
 
     @staticmethod
     def _normalize_permalink(value: str | None) -> str | None:
