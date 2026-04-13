@@ -132,6 +132,7 @@ TABLE_SCHEMAS: dict[str, dict[str, Any]] = {
         "status": pl.String,
         "fallback_used": pl.Boolean,
         "warning_count": pl.Int64,
+        "warning_messages": pl.List(pl.String),
         "post_count": pl.Int64,
         "propagation_count": pl.Int64,
         "comment_count": pl.Int64,
@@ -145,4 +146,3 @@ TABLE_SCHEMAS: dict[str, dict[str, Any]] = {
         "source_run_ids": pl.List(pl.String),
     },
 }
-

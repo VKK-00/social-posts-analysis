@@ -253,11 +253,37 @@ def is_comment_control_line(line: str) -> bool:
         return True
     if re.fullmatch(r"[\W_]+", normalized):
         return True
-    if normalized in {"Like", "Reply", "Replies", "Most relevant", "All comments", "Newest"}:
+    if normalized in {
+        "Like",
+        "Reply",
+        "Replies",
+        "Most relevant",
+        "All comments",
+        "Newest",
+        "Подобається",
+        "Відповісти",
+        "Відповіді",
+        "Найактуальніші",
+        "Усі коментарі",
+        "Найновіші",
+        "Нравится",
+        "Ответить",
+        "Ответы",
+        "Все комментарии",
+        "Новые",
+    }:
         return True
     if re.fullmatch(r"\d+\s+Repl(?:y|ies)", normalized, flags=re.IGNORECASE):
         return True
+    if re.fullmatch(r"\d+\s+відповід(?:ь|і|ей)", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"\d+\s+ответ(?:а|ов|ы)?", normalized, flags=re.IGNORECASE):
+        return True
     if re.fullmatch(r".{1,80}\s+replied", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r".{1,80}\s+відповів(?:ла)?", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r".{1,80}\s+ответил(?:а)?", normalized, flags=re.IGNORECASE):
         return True
     return normalized == "\u00c2\u00b7"
 
@@ -275,6 +301,8 @@ def is_plausible_comment_author(value: str) -> bool:
         return False
     if len(candidate) > 80 or "\n" in candidate:
         return False
+    if is_comment_control_line(candidate):
+        return False
     if parse_post_timestamp(candidate):
         return False
     if re.fullmatch(r"[\W_]*\d+[\W_]*", candidate):
@@ -286,6 +314,15 @@ def is_plausible_comment_author(value: str) -> bool:
         "Most relevant",
         "All comments",
         "View more comments",
+        "Подобається",
+        "Відповісти",
+        "Відповіді",
+        "Усі коментарі",
+        "Найактуальніші",
+        "Нравится",
+        "Ответить",
+        "Ответы",
+        "Все комментарии",
     }:
         return False
     return True
@@ -343,7 +380,11 @@ def derive_comment_author(raw_text: str) -> str | None:
     for line in lines:
         if is_plausible_comment_author(line):
             return line
-    return lines[0] if lines else None
+    if lines:
+        fallback = lines[0]
+        if not is_comment_control_line(fallback) and not parse_post_timestamp(fallback):
+            return fallback
+    return None
 
 
 def looks_like_name_token(token: str) -> bool:

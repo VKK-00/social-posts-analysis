@@ -52,20 +52,24 @@ def parse_timestamp_token(hint: str) -> str | None:
             return (now - timedelta(days=1)).isoformat()
 
     formats = [
-        "%B %d at %I:%M %p",
-        "%b %d at %I:%M %p",
-        "%B %d, %Y at %I:%M %p",
-        "%b %d, %Y at %I:%M %p",
-        "%B %d",
-        "%b %d",
-        "%B %d, %Y",
-        "%b %d, %Y",
+        ("%B %d at %I:%M %p", False),
+        ("%b %d at %I:%M %p", False),
+        ("%B %d, %Y at %I:%M %p", True),
+        ("%b %d, %Y at %I:%M %p", True),
+        ("%B %d", False),
+        ("%b %d", False),
+        ("%B %d, %Y", True),
+        ("%b %d, %Y", True),
     ]
-    for fmt in formats:
+    for fmt, has_explicit_year in formats:
         try:
-            parsed = datetime.strptime(hint, fmt)
-            year = parsed.year if "%Y" in fmt else now.year
-            final_dt = parsed.replace(year=year, tzinfo=UTC)
+            if has_explicit_year:
+                parsed = datetime.strptime(hint, fmt)
+            else:
+                parse_hint = f"{hint}, {now.year}"
+                parse_fmt = f"{fmt}, %Y"
+                parsed = datetime.strptime(parse_hint, parse_fmt)
+            final_dt = parsed.replace(tzinfo=UTC)
             return final_dt.isoformat()
         except ValueError:
             continue

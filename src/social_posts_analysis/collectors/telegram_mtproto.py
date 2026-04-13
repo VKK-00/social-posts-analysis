@@ -28,6 +28,7 @@ from .value_utils import safe_int
 class DiscussionContext:
     chat: Any
     root_message_id: int
+    expected_comment_count: int = 0
 
 
 class TelegramMtprotoCollector(BaseCollector):
@@ -218,7 +219,13 @@ class TelegramMtprotoCollector(BaseCollector):
                 root_message = next(iter(getattr(result, "messages", []) or []), None)
             if root_message is None:
                 return None
-            return DiscussionContext(chat=chat, root_message_id=self._message_id(root_message))
+            replies = getattr(root_message, "replies", None)
+            expected_comment_count = safe_int(getattr(replies, "replies", None))
+            return DiscussionContext(
+                chat=chat,
+                root_message_id=self._message_id(root_message),
+                expected_comment_count=expected_comment_count or 0,
+            )
         except Exception:
             return None
 
@@ -235,7 +242,11 @@ class TelegramMtprotoCollector(BaseCollector):
         message_to_comment_id: dict[str, str] = {}
         comment_depths: dict[str, int] = {}
 
-        for message in self._iter_discussion_messages(client, discussion_context):
+        discussion_messages = self._order_discussion_messages(
+            self._iter_discussion_messages(client, discussion_context),
+            root_message_id=discussion_context.root_message_id,
+        )
+        for message in discussion_messages:
             if self._is_service_message(message):
                 filtered_service_messages += 1
                 continue
@@ -251,12 +262,87 @@ class TelegramMtprotoCollector(BaseCollector):
         return comments, filtered_service_messages
 
     def _iter_discussion_messages(self, client: Any, discussion_context: DiscussionContext) -> Iterable[Any]:
-        return client.iter_messages(
-            discussion_context.chat,
-            limit=self.settings.page_size,
-            reply_to=discussion_context.root_message_id,
-            reverse=True,
+        direct_messages = list(
+            client.iter_messages(
+                discussion_context.chat,
+                limit=self.settings.page_size,
+                reply_to=discussion_context.root_message_id,
+                reverse=True,
+            )
         )
+        messages_by_id = {self._message_id(message): message for message in direct_messages}
+        scan_limit = max(
+            self.settings.page_size * 3,
+            min(max(discussion_context.expected_comment_count * 2, 0), 1000),
+            100,
+        )
+        broad_messages = list(
+            client.iter_messages(
+                discussion_context.chat,
+                limit=scan_limit,
+                offset_date=self._end_datetime(),
+                reverse=True,
+            )
+        )
+        for message in broad_messages:
+            message_id = self._message_id(message)
+            if message_id == discussion_context.root_message_id or message_id in messages_by_id:
+                continue
+            if self._belongs_to_discussion_thread(message, discussion_context.root_message_id):
+                messages_by_id[message_id] = message
+        return sorted(
+            messages_by_id.values(),
+            key=lambda item: (
+                self._message_datetime(item) or datetime.min.replace(tzinfo=UTC),
+                self._message_id(item),
+            ),
+        )
+
+    def _order_discussion_messages(
+        self,
+        messages: Iterable[Any],
+        *,
+        root_message_id: int,
+    ) -> list[Any]:
+        message_list = list(messages)
+        messages_by_id = {self._message_id(message): message for message in message_list}
+        ordered: list[Any] = []
+        seen: set[int] = set()
+
+        def visit(message: Any) -> None:
+            message_id = self._message_id(message)
+            if message_id in seen:
+                return
+            parent_message_id = self._reply_to_parent_message_id(message)
+            if parent_message_id is not None and parent_message_id != root_message_id:
+                parent_message = messages_by_id.get(parent_message_id)
+                if parent_message is not None:
+                    visit(parent_message)
+            seen.add(message_id)
+            ordered.append(message)
+
+        for message in sorted(
+            message_list,
+            key=lambda item: (
+                self._message_datetime(item) or datetime.min.replace(tzinfo=UTC),
+                self._message_id(item),
+            ),
+        ):
+            visit(message)
+        return ordered
+
+    @classmethod
+    def _belongs_to_discussion_thread(cls, message: Any, root_message_id: int) -> bool:
+        reply_to = getattr(message, "reply_to", None)
+        if reply_to is not None:
+            reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
+            reply_to_top_id = getattr(reply_to, "reply_to_top_id", None)
+            if reply_to_msg_id == root_message_id or reply_to_top_id == root_message_id:
+                return True
+        if isinstance(message, dict):
+            nested = message.get("reply_to") or {}
+            return nested.get("reply_to_msg_id") == root_message_id or nested.get("reply_to_top_id") == root_message_id
+        return False
 
     def _build_post_snapshot(self, *, message: Any, source_entity: Any, raw_store: RawSnapshotStore) -> PostSnapshot:
         post_id = self._telegram_post_id(source_entity, message)
@@ -310,9 +396,10 @@ class TelegramMtprotoCollector(BaseCollector):
         payload = self._serialize_object(message)
         raw_path = raw_store.write_json("telegram_comments", slugify(comment_id), payload)
         reply_to_message_id = self._reply_to_message_id(message)
+        parent_message_id = self._reply_to_parent_message_id(message)
         parent_comment_id = (
-            message_to_comment_id.get(str(reply_to_message_id))
-            if reply_to_message_id is not None
+            message_to_comment_id.get(str(parent_message_id))
+            if parent_message_id is not None
             else None
         )
         depth = comment_depths.get(parent_comment_id, -1) + 1 if parent_comment_id else 0
@@ -443,19 +530,34 @@ class TelegramMtprotoCollector(BaseCollector):
         return None
 
     @staticmethod
-    def _reply_to_message_id(message: Any) -> int | None:
+    def _reply_to_parent_message_id(message: Any) -> int | None:
         reply_to = getattr(message, "reply_to", None)
         if reply_to is not None:
-            for attr in ("reply_to_msg_id", "reply_to_top_id"):
-                value = getattr(reply_to, attr, None)
-                if value:
-                    return int(value)
+            value = getattr(reply_to, "reply_to_msg_id", None)
+            if value:
+                return int(value)
         if isinstance(message, dict):
             nested = message.get("reply_to") or {}
-            for key in ("reply_to_msg_id", "reply_to_top_id"):
-                value = nested.get(key)
-                if value:
-                    return int(value)
+            value = nested.get("reply_to_msg_id")
+            if value:
+                return int(value)
+        return None
+
+    @staticmethod
+    def _reply_to_message_id(message: Any) -> int | None:
+        parent_message_id = TelegramMtprotoCollector._reply_to_parent_message_id(message)
+        if parent_message_id is not None:
+            return parent_message_id
+        reply_to = getattr(message, "reply_to", None)
+        if reply_to is not None:
+            value = getattr(reply_to, "reply_to_top_id", None)
+            if value:
+                return int(value)
+        if isinstance(message, dict):
+            nested = message.get("reply_to") or {}
+            value = nested.get("reply_to_top_id")
+            if value:
+                return int(value)
         return None
 
     def _telegram_post_id(self, source_entity: Any, message: Any) -> str:

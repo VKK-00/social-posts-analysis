@@ -146,6 +146,7 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
             "status": manifest.status,
             "fallback_used": manifest.fallback_used,
             "warning_count": len(manifest.warnings),
+            "warning_messages": manifest.warnings,
             "post_count": len([record for record in posts_records if not record.get("is_propagation")]),
             "propagation_count": len(propagation_records),
             "comment_count": len(comments_records),
@@ -170,4 +171,3 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
         "media_refs": media_refs,
         "collection_runs": collection_runs,
     }
-

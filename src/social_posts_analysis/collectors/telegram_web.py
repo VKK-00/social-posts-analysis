@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -128,6 +129,7 @@ class TelegramWebCollector(BaseCollector):
             post_id = f"telegram:{source_id}:{item['message_id']}"
             raw_path = raw_store.write_json("telegram_web_posts", slugify(post_id), item)
             origin_post_id, origin_external_id, origin_permalink = self._forward_origin_metadata(item)
+            is_forward = bool(item.get("forwarded_from_name") or item.get("forwarded_permalink") or item.get("forwarded_message_id"))
             posts.append(
                 PostSnapshot(
                     post_id=post_id,
@@ -136,13 +138,13 @@ class TelegramWebCollector(BaseCollector):
                     origin_post_id=origin_post_id,
                     origin_external_id=origin_external_id,
                     origin_permalink=origin_permalink,
-                    propagation_kind="forward" if item.get("forwarded_from_name") else None,
-                    is_propagation=bool(item.get("forwarded_from_name")),
+                    propagation_kind="forward" if is_forward else None,
+                    is_propagation=is_forward,
                     created_at=created_at,
                     message=item.get("text"),
                     permalink=item.get("permalink"),
                     reactions=sum(int(value or 0) for value in reactions.values()),
-                    comments_count=0,
+                    comments_count=self._visible_discussion_count(item),
                     views=parse_compact_number(item.get("views")),
                     has_media=bool(item.get("has_media")),
                     media_type=item.get("media_type"),
@@ -169,6 +171,7 @@ class TelegramWebCollector(BaseCollector):
     ) -> list[PostSnapshot]:
         updated_posts = {post.post_id: post.model_copy(deep=True) for post in posts}
         comment_id_by_permalink: dict[str, str] = {}
+        comment_id_by_message_id: dict[str, str] = {}
         comment_depths: dict[str, int] = {}
         comment_parent_posts: dict[str, str] = {}
 
@@ -177,6 +180,11 @@ class TelegramWebCollector(BaseCollector):
             if not self._within_range(created_at):
                 continue
             reply_permalink = self._normalize_permalink(item.get("reply_permalink"))
+            reply_message_id = str(
+                item.get("reply_message_id")
+                or self._message_id_from_permalink(reply_permalink)
+                or ""
+            ).strip() or None
             if not reply_permalink:
                 continue
 
@@ -189,7 +197,11 @@ class TelegramWebCollector(BaseCollector):
                 parent_post_id = parent_post.post_id
                 thread_root_post_id = parent_post.post_id
             else:
-                parent_comment_id = comment_id_by_permalink.get(reply_permalink)
+                parent_comment_id = None
+                if reply_message_id:
+                    parent_comment_id = comment_id_by_message_id.get(reply_message_id)
+                if parent_comment_id is None:
+                    parent_comment_id = comment_id_by_permalink.get(reply_permalink)
                 if parent_comment_id is None:
                     continue
                 parent_post_id = comment_parent_posts.get(parent_comment_id, "")
@@ -206,7 +218,7 @@ class TelegramWebCollector(BaseCollector):
                 platform="telegram",
                 parent_post_id=parent_post_id,
                 parent_comment_id=parent_comment_id,
-                reply_to_message_id=item.get("reply_message_id"),
+                reply_to_message_id=reply_message_id,
                 thread_root_post_id=thread_root_post_id,
                 created_at=created_at,
                 message=item.get("text"),
@@ -231,6 +243,7 @@ class TelegramWebCollector(BaseCollector):
             comment_permalink = self._normalize_permalink(item.get("permalink"))
             if comment_permalink:
                 comment_id_by_permalink[comment_permalink] = comment_id
+            comment_id_by_message_id[str(item["message_id"])] = comment_id
             comment_depths[comment_id] = depth
             comment_parent_posts[comment_id] = parent_post_id
 
@@ -310,6 +323,7 @@ class TelegramWebCollector(BaseCollector):
                     "permalink": self._normalize_permalink(item.get("permalink")),
                     "forwarded_permalink": self._normalize_permalink(item.get("forwarded_permalink")),
                     "reply_permalink": self._normalize_permalink(item.get("reply_permalink")),
+                    "reply_message_id": item.get("reply_message_id") or self._message_id_from_permalink(item.get("reply_permalink")),
                     "reaction_breakdown": {
                         str(key): parse_compact_number(str(value))
                         for key, value in (item.get("reaction_breakdown") or {}).items()
@@ -337,7 +351,11 @@ class TelegramWebCollector(BaseCollector):
 
     def _forward_origin_metadata(self, item: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
         forwarded_permalink = self._normalize_permalink(item.get("forwarded_permalink"))
-        forwarded_message_id = str(item.get("forwarded_message_id") or "").strip() or None
+        forwarded_message_id = str(
+            item.get("forwarded_message_id")
+            or self._message_id_from_permalink(forwarded_permalink)
+            or ""
+        ).strip() or None
         if forwarded_permalink:
             parsed = urlparse(forwarded_permalink)
             parts = [part for part in parsed.path.split("/") if part]
@@ -355,10 +373,36 @@ class TelegramWebCollector(BaseCollector):
         return None, None, forwarded_permalink
 
     @staticmethod
+    def _visible_discussion_count(item: dict[str, Any]) -> int:
+        reply_text = str(item.get("reply_text") or "").strip()
+        if not reply_text:
+            return 0
+        match = re.search(
+            r"(\d+(?:[.,]\d+)?\s*[KMB]?)\s*(?:comments?|repl(?:y|ies)|discussion|комментари(?:й|я|ев)|ответ(?:ов|а|ы)?)",
+            reply_text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return 0
+        return parse_compact_number(match.group(1))
+
+    @staticmethod
     def _normalize_permalink(value: str | None) -> str | None:
         if not value:
             return None
         return value.rstrip("/")
+
+    @staticmethod
+    def _message_id_from_permalink(value: str | None) -> str | None:
+        if not value:
+            return None
+        parsed = urlparse(value)
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 3 and parts[0] == "s":
+            return parts[2]
+        if len(parts) >= 2:
+            return parts[1]
+        return None
 
     def _source_reference(self) -> str:
         return self.config.source.source_name or self.config.source.source_id or self._extract_name_from_url(self.config.source.url)

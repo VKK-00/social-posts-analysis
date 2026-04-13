@@ -8,7 +8,7 @@ import typer
 from .analysis.service import AnalysisService
 from .config import ProjectConfig, load_config
 from .normalize import NormalizationService
-from .paths import ProjectPaths
+from .paths import ProjectPaths, project_root_for_config, relative_output_paths_warning
 from .pipeline import CollectionService, PipelineRunner
 from .reporting.service import ReportService, ReviewExportService
 
@@ -16,8 +16,11 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 
 
 def _load_project(config_path: Path) -> tuple[Path, ProjectPaths, ProjectConfig]:
-    root = config_path.resolve().parent.parent if config_path.parent.name == "config" else config_path.resolve().parent
+    root = project_root_for_config(config_path)
     config = load_config(config_path)
+    warning = relative_output_paths_warning(config_path, config)
+    if warning:
+        typer.echo(f"Warning: {warning}", err=True)
     paths = ProjectPaths.from_config(root, config)
     paths.ensure()
     return root, paths, config

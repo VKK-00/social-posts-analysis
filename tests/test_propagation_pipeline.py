@@ -376,3 +376,86 @@ def test_x_quote_replies_are_separated_from_origin_replies(tmp_path: Path) -> No
         and row["oppose_count"] == 1
         for row in context["origin_plus_support"]
     )
+
+
+def test_telegram_mtproto_warning_trace_reaches_report_context(tmp_path: Path) -> None:
+    run_id = "20260410T150000Z"
+    config = _test_config(
+        platform="telegram",
+        source={"source_name": "example_channel"},
+        collector={
+            "mode": "mtproto",
+            "telegram_mtproto": {
+                "enabled": True,
+                "session_file": "test.session",
+                "api_id": 12345,
+                "api_hash": "test-hash",
+            },
+            "telegram_web": {"enabled": False},
+        },
+    )
+    manifest = CollectionManifest(
+        run_id=run_id,
+        collected_at="2026-04-10T15:00:00+00:00",
+        collector="telegram_mtproto",
+        mode="mtproto",
+        status="partial",
+        warnings=["Telegram discussion fallback scan was used for nested replies."],
+        source=SourceSnapshot(
+            platform="telegram",
+            source_id="example_channel",
+            source_name="Example Channel",
+            source_url="https://t.me/example_channel",
+            source_type="channel",
+            source_collector="telegram_mtproto",
+            raw_path="source.json",
+            discussion_chat_id="example_discussion",
+            discussion_linked=True,
+        ),
+        posts=[],
+    )
+    _, _, _, context = _run_pipeline(tmp_path, run_id=run_id, config=config, manifest=manifest)
+
+    assert context["source_run_trace"][0]["collector"] == "telegram_mtproto"
+    assert context["source_run_trace"][0]["mode"] == "mtproto"
+    assert context["source_run_trace"][0]["status"] == "partial"
+    assert context["source_warnings"][0]["source_run_id"] == run_id
+    assert "nested replies" in context["source_warnings"][0]["warning"]
+
+
+def test_x_api_warning_trace_reaches_report_context(tmp_path: Path) -> None:
+    run_id = "20260410T160000Z"
+    config = _test_config(
+        platform="x",
+        source={"source_name": "example_account"},
+        collector={
+            "mode": "x_api",
+            "x_api": {"enabled": True, "bearer_token": "test-token"},
+            "x_web": {"enabled": False},
+        },
+    )
+    manifest = CollectionManifest(
+        run_id=run_id,
+        collected_at="2026-04-10T16:00:00+00:00",
+        collector="x_api",
+        mode="x_api",
+        status="partial",
+        warnings=["X API quote thread for post x:example_account:201 reports reply_count 2, but search returned no replies."],
+        source=SourceSnapshot(
+            platform="x",
+            source_id="example_account",
+            source_name="example_account",
+            source_url="https://x.com/example_account",
+            source_type="account",
+            source_collector="x_api",
+            raw_path="source.json",
+        ),
+        posts=[],
+    )
+    _, _, _, context = _run_pipeline(tmp_path, run_id=run_id, config=config, manifest=manifest)
+
+    assert context["source_run_trace"][0]["collector"] == "x_api"
+    assert context["source_run_trace"][0]["mode"] == "x_api"
+    assert context["source_run_trace"][0]["status"] == "partial"
+    assert context["source_warnings"][0]["source_run_id"] == run_id
+    assert "quote thread" in context["source_warnings"][0]["warning"]

@@ -101,6 +101,24 @@ Source runs:
 {% endfor %}
 {% endif %}
 
+{% if source_warnings %}
+## Source Warning Trace
+| Source Run | Warning # | Warning |
+| --- | ---: | --- |
+{% for row in source_warnings %}
+| `{{ row.source_run_id }}` | {{ row.warning_index }} | {{ row.warning }} |
+{% endfor %}
+{% endif %}
+
+{% if source_run_trace %}
+## Source Run Trace
+| Source Run | Collector | Mode | Status | Fallback | Warnings |
+| --- | --- | --- | --- | --- | ---: |
+{% for row in source_run_trace %}
+| `{{ row.source_run_id }}` | `{{ row.collector or "n/a" }}` | `{{ row.mode or "n/a" }}` | `{{ row.status or "n/a" }}` | `{{ row.fallback_used }}` | {{ row.warning_count }} |
+{% endfor %}
+{% endif %}
+
 ## Global Support By Side
 | Side | Support | Oppose | Neutral | Unclear | Support Ratio | Net Support |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -91,6 +91,9 @@ class XApiCollector(BaseCollector):
                 except CollectorUnavailableError as exc:
                     warnings.append(f"Replies search failed for post {post_snapshot.post_id}: {exc}")
                     comments = []
+                reply_warning = self._propagation_reply_coverage_warning(post_snapshot, comments)
+                if reply_warning:
+                    warnings.append(reply_warning)
                 post_snapshot = post_snapshot.model_copy(
                     update={"comments": comments, "comments_count": max(post_snapshot.comments_count, len(comments))}
                 )
@@ -502,6 +505,25 @@ class XApiCollector(BaseCollector):
     @staticmethod
     def _native_tweet_id(post_id: str) -> str:
         return post_id.split(":")[-1]
+
+    def _propagation_reply_coverage_warning(
+        self,
+        post_snapshot: PostSnapshot,
+        comments: list[CommentSnapshot],
+    ) -> str | None:
+        if not post_snapshot.is_propagation or post_snapshot.comments_count <= 0 or comments:
+            return None
+        if post_snapshot.propagation_kind == "quote":
+            return (
+                f"X API quote thread for post {post_snapshot.post_id} reports reply_count "
+                f"{post_snapshot.comments_count}, but search returned no replies."
+            )
+        if post_snapshot.propagation_kind == "repost":
+            return (
+                f"X API repost thread for post {post_snapshot.post_id} reports reply_count "
+                f"{post_snapshot.comments_count}, but search returned no replies."
+            )
+        return None
 
     def _search_window_warnings(self) -> list[str]:
         if self.settings.search_scope != "recent" or not self.config.date_range.start:

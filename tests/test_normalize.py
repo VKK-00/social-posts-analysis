@@ -152,3 +152,31 @@ def test_normalization_reuses_existing_run_for_same_source_run_ids(project_confi
     assert first_summary["reused_existing_run"] is False
     assert second_summary["reused_existing_run"] is True
     assert second_summary["source_run_ids"] == ["20260402T120000Z"]
+
+
+def test_normalization_persists_merged_warning_messages(project_root: Path, project_config, project_paths) -> None:
+    source_dir = project_root / "data/raw/20260402T120000Z"
+    source_manifest_path = source_dir / "manifest.json"
+    source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    source_manifest["warnings"] = ["Older source-run warning."]
+    source_manifest_path.write_text(json.dumps(source_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    target_dir = project_root / "data/raw/20260402T121500Z"
+    shutil.copytree(source_dir, target_dir)
+    target_manifest_path = target_dir / "manifest.json"
+    target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
+    target_manifest["run_id"] = "20260402T121500Z"
+    target_manifest["warnings"] = []
+    target_manifest_path.write_text(json.dumps(target_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    project_config.normalization.merge_recent_runs = 2
+    NormalizationService(project_config, project_paths).run(run_id="20260402T121500Z")
+
+    import polars as pl
+
+    collection_runs = pl.read_parquet(project_paths.processed_root / "collection_runs.parquet").filter(
+        pl.col("run_id") == "20260402T121500Z"
+    )
+
+    assert "warning_messages" in collection_runs.columns
+    assert "Older source-run warning." in collection_runs["warning_messages"][0]

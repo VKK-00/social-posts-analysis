@@ -223,6 +223,8 @@ class ReportService:
         propagation_overview = self._propagation_overview(propagations, comments)
         propagation_comments = self._propagation_comment_overview(comments, propagations)
         top_propagated_items = self._top_propagated_items(origin_posts, propagations)
+        source_run_trace = self._source_run_trace_rows(run_id, collection_runs)
+        source_warnings = self._source_warning_rows(run_id, collection_runs)
         top_supportive_comments = self._top_comments_by_stance(
             stance_labels=stance_labels,
             comments=comments,
@@ -294,6 +296,8 @@ class ReportService:
             "propagation_coverage_gaps": self._rows_to_frame(propagation_coverage_gaps),
             "reply_depth_summary": self._rows_to_frame(reply_depth_summary),
             "top_propagated_items": self._rows_to_frame(top_propagated_items),
+            "source_run_trace": self._rows_to_frame(source_run_trace),
+            "source_warnings": self._rows_to_frame(source_warnings),
         }
         telegram_summary = self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
         x_summary = self._x_summary(origin_posts, comments) if platform == "x" else None
@@ -330,6 +334,8 @@ class ReportService:
             "top_supportive_comments": top_supportive_comments,
             "top_critical_comments": top_critical_comments,
             "reply_depth_summary": reply_depth_summary,
+            "source_run_trace": source_run_trace,
+            "source_warnings": source_warnings,
             "warnings": warnings,
             "telegram_summary": telegram_summary,
             "x_summary": x_summary,
@@ -604,6 +610,85 @@ class ReportService:
     def _reply_depth_summary(self, comments: pl.DataFrame) -> list[dict[str, Any]]:
         return reply_depth_summary(comments)
 
+    def _source_warning_rows(self, run_id: str, collection_runs: pl.DataFrame) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for source_run_id, manifest in self._source_run_manifests(run_id, collection_runs):
+            for warning_index, warning in enumerate(manifest.get("warnings", []), start=1):
+                if not warning:
+                    continue
+                rows.append(
+                    {
+                        "source_run_id": source_run_id,
+                        "warning_index": warning_index,
+                        "warning": warning,
+                    }
+                )
+        if rows:
+            return rows
+        if collection_runs.is_empty() or "warning_messages" not in collection_runs.columns:
+            return []
+        raw_warning_messages = collection_runs["warning_messages"][0]
+        if isinstance(raw_warning_messages, pl.Series):
+            warning_messages = raw_warning_messages.to_list()
+        else:
+            warning_messages = list(raw_warning_messages or [])
+        return [
+            {
+                "source_run_id": run_id,
+                "warning_index": index + 1,
+                "warning": warning,
+            }
+            for index, warning in enumerate(warning_messages)
+            if warning
+        ]
+
+    def _source_run_trace_rows(self, run_id: str, collection_runs: pl.DataFrame) -> list[dict[str, Any]]:
+        rows = [
+            {
+                "source_run_id": source_run_id,
+                "collector": manifest.get("collector"),
+                "mode": manifest.get("mode"),
+                "status": manifest.get("status"),
+                "fallback_used": bool(manifest.get("fallback_used", False)),
+                "warning_count": len(manifest.get("warnings", [])),
+            }
+            for source_run_id, manifest in self._source_run_manifests(run_id, collection_runs)
+        ]
+        if rows:
+            return rows
+        if collection_runs.is_empty():
+            return []
+        return [
+            {
+                "source_run_id": run_id,
+                "collector": collection_runs["collector"][0] if "collector" in collection_runs.columns else None,
+                "mode": collection_runs["mode"][0] if "mode" in collection_runs.columns else None,
+                "status": collection_runs["status"][0] if "status" in collection_runs.columns else None,
+                "fallback_used": bool(collection_runs["fallback_used"][0]) if "fallback_used" in collection_runs.columns else False,
+                "warning_count": int(collection_runs["warning_count"][0]) if "warning_count" in collection_runs.columns else 0,
+            }
+        ]
+
+    def _source_run_ids(self, run_id: str, collection_runs: pl.DataFrame) -> list[str]:
+        if collection_runs.height and "source_run_ids" in collection_runs.columns:
+            raw_source_run_ids = collection_runs["source_run_ids"][0]
+            if isinstance(raw_source_run_ids, pl.Series):
+                source_run_ids = raw_source_run_ids.to_list()
+            else:
+                source_run_ids = list(raw_source_run_ids or [])
+            if source_run_ids:
+                return source_run_ids
+        return [run_id]
+
+    def _source_run_manifests(self, run_id: str, collection_runs: pl.DataFrame) -> list[tuple[str, dict[str, Any]]]:
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for source_run_id in self._source_run_ids(run_id, collection_runs):
+            manifest_path = self.paths.run_raw_dir(source_run_id) / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            rows.append((source_run_id, read_json(manifest_path)))
+        return rows
+
     def _data_quality_warnings(
         self,
         run_id: str,
@@ -614,10 +699,14 @@ class ReportService:
         collection_runs: pl.DataFrame,
     ) -> list[str]:
         warnings: list[str] = []
-        manifest_path = self.paths.run_raw_dir(run_id) / "manifest.json"
-        if manifest_path.exists():
-            manifest = read_json(manifest_path)
-            warnings.extend(manifest.get("warnings", []))
+        source_warning_rows = self._source_warning_rows(run_id, collection_runs)
+        if source_warning_rows:
+            warnings.extend(row["warning"] for row in source_warning_rows)
+        else:
+            manifest_path = self.paths.run_raw_dir(run_id) / "manifest.json"
+            if manifest_path.exists():
+                manifest = read_json(manifest_path)
+                warnings.extend(manifest.get("warnings", []))
         if collection_runs.height and bool(collection_runs["fallback_used"][0]):
             warnings.append("Collector fallback was used for this run.")
         if collection_runs.height and "source_run_count" in collection_runs.columns and int(collection_runs["source_run_count"][0]) > 1:

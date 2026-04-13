@@ -910,9 +910,26 @@ class PublicWebCollector(BaseCollector):
 
     @staticmethod
     def _extract_comment_count(payload: dict[str, Any]) -> int:
-        body_text = payload.get("body_text") or ""
-        for line in body_text.replace("\xa0", " ").splitlines():
-            match = re.search(r"(\d+(?:\.\d+)?\s*[KM]?)\s+comments?", line, flags=re.IGNORECASE)
+        text_candidates = [
+            str(payload.get("body_text") or ""),
+            str(payload.get("meta_description") or ""),
+            str(payload.get("meta_title") or ""),
+        ]
+        for raw_text in text_candidates:
+            for line in raw_text.replace("\xa0", " ").splitlines():
+                count = PublicWebCollector._extract_comment_count_from_text(line)
+                if count > 0:
+                    return count
+        return 0
+
+    @staticmethod
+    def _extract_comment_count_from_text(raw_text: str) -> int:
+        patterns = (
+            r"(\d+(?:\.\d+)?\s*[KM]?)\s+(?:comments?|коментар(?:і|ів|я)|комментари(?:й|и|ев|я))\b",
+            r"(?:comments?|коментар(?:і|ів|я)|комментари(?:й|и|ев|я))[:\s]+(\d+(?:\.\d+)?\s*[KM]?)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, flags=re.IGNORECASE)
             if match:
                 return PublicWebCollector._extract_metric_count(match.group(1))
         return 0

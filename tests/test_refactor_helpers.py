@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 import polars as pl
@@ -120,4 +122,54 @@ def test_report_export_table_schema_stays_stable(project_config, project_paths) 
         "propagation_coverage_gaps",
         "reply_depth_summary",
         "top_propagated_items",
+        "source_run_trace",
+        "source_warnings",
     }
+
+
+def test_report_service_uses_collection_run_warning_messages_for_merged_runs(
+    project_root: Path,
+    project_config,
+    project_paths,
+) -> None:
+    source_dir = project_root / "data/raw/20260402T120000Z"
+    source_manifest_path = source_dir / "manifest.json"
+    source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    source_manifest["collector"] = "meta_api"
+    source_manifest["mode"] = "hybrid"
+    source_manifest["status"] = "success"
+    source_manifest["fallback_used"] = False
+    source_manifest["warnings"] = ["Older source-run warning."]
+    source_manifest_path.write_text(json.dumps(source_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    target_dir = project_root / "data/raw/20260402T121500Z"
+    shutil.copytree(source_dir, target_dir)
+    target_manifest_path = target_dir / "manifest.json"
+    target_manifest = json.loads(target_manifest_path.read_text(encoding="utf-8"))
+    target_manifest["run_id"] = "20260402T121500Z"
+    target_manifest["collector"] = "public_web"
+    target_manifest["mode"] = "hybrid"
+    target_manifest["status"] = "partial"
+    target_manifest["fallback_used"] = True
+    target_manifest["warnings"] = ["Newer source-run warning."]
+    target_manifest_path.write_text(json.dumps(target_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    project_config.normalization.merge_recent_runs = 2
+    NormalizationService(project_config, project_paths).run(run_id="20260402T121500Z")
+    AnalysisService(project_config, project_paths).run(run_id="20260402T121500Z")
+
+    context = ReportService(project_config, project_paths)._build_context("20260402T121500Z")
+
+    assert "Older source-run warning." in context["warnings"]
+    assert "Newer source-run warning." in context["warnings"]
+    assert "source_run_trace" in context["export_tables"]
+    assert "source_warnings" in context["export_tables"]
+    source_run_trace = context["export_tables"]["source_run_trace"].sort("source_run_id")
+    assert source_run_trace["source_run_id"].to_list() == ["20260402T120000Z", "20260402T121500Z"]
+    assert source_run_trace["collector"].to_list() == ["meta_api", "public_web"]
+    assert source_run_trace["mode"].to_list() == ["hybrid", "hybrid"]
+    assert source_run_trace["status"].to_list() == ["success", "partial"]
+    assert source_run_trace["fallback_used"].to_list() == [False, True]
+    source_warnings = context["export_tables"]["source_warnings"].sort(["source_run_id", "warning_index"])
+    assert source_warnings["source_run_id"].to_list() == ["20260402T120000Z", "20260402T121500Z"]
+    assert source_warnings["warning"].to_list() == ["Older source-run warning.", "Newer source-run warning."]

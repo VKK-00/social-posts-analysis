@@ -8,9 +8,9 @@ The project stores all outputs locally and is built around one configured source
 
 Support is intentionally tiered. The project does not claim equal coverage across every network.
 
-- `facebook`: supported. Meta API, public web, authenticated browser web, propagation via visible shares and share comments on a best-effort basis.
-- `telegram`: supported. MTProto, public web, Bot API update queue, linked discussion trees, visible forwards on a best-effort basis.
-- `x`: supported. Official X API v2, public web, quotes and reposts as first-class propagation objects.
+- `facebook`: supported. Meta API, public web, authenticated browser web, propagation via visible shares and share comments on a best-effort basis. Facebook public web now also preserves localized visible comment counters from detail pages even when extracted comment snapshots are shallower than the visible UI count, and strips more localized UI/control lines out of extracted comment snapshots.
+- `telegram`: supported. MTProto, public web, Bot API update queue, linked discussion trees, visible forwards on a best-effort basis. Telegram web now preserves visible discussion counters from the post surface even before a separate public discussion feed is attached. Telegram MTProto now reorders nested discussion messages by parent chain and grows its fallback scan using the visible thread size when that signal is available.
+- `x`: supported. Official X API v2, public web, quotes and reposts as first-class propagation objects. X web now filters embedded quoted/origin status cards out of detail-page reply extraction.
 - `threads`: beta. Threads API for owned-account scenarios is wired in, but public web coverage is still unstable and can yield zero posts for a valid public profile depending on the current Threads UI.
 - `instagram`: beta. Instagram Graph API is wired in for owned professional accounts; public web collection currently behaves mostly as post-level extraction with shallow or empty public comments.
 
@@ -18,6 +18,7 @@ Support is intentionally tiered. The project does not claim equal coverage acros
 
 - collects source posts or messages for one configured account, page, or channel
 - collects comments, replies, and discussion trees where the platform exposes them
+- preserves visible discussion/comment counters where the platform exposes them even if full comment text extraction is partial
 - detects visible propagation instances such as shares, forwards, quotes, and repost-like copies
 - stores raw snapshots under `data/raw/<run_id>/`
 - normalizes data into parquet files and DuckDB tables
@@ -89,6 +90,14 @@ python -m playwright install chromium
 ## Configuration
 
 The checked-in [project.yaml](C:\Coding projects\facebook_posts_analysis\config\project.yaml) is a safe public template. For real runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`.
+
+Path resolution for `paths.*` is intentionally simple:
+
+- when the config file lives under a `config/` directory, relative output paths are resolved from the project root
+- when the config file lives somewhere else, relative output paths are resolved from that config file directory
+- if you generate temporary configs outside the repository, prefer absolute `paths.raw_dir`, `paths.processed_dir`, `paths.review_dir`, `paths.reports_dir`, and `paths.database_path`
+
+The CLI now emits an explicit warning for the second case so that temp-config runs do not silently write outputs into an unexpected directory.
 
 Important top-level settings:
 
@@ -459,6 +468,8 @@ Normalized tables:
 - `media_refs.parquet`
 - `collection_runs.parquet`
 
+`collection_runs.parquet` now carries both `warning_count` and merged `warning_messages`, so collector warnings from multi-run normalization survive into reporting. For per-run traceability, report export still resolves raw warnings by `source_run_id` whenever the underlying raw manifests are present.
+
 Analysis tables:
 
 - `detected_languages.parquet`
@@ -479,6 +490,17 @@ Reports:
 - `reports/report_<run_id>.html`
 - `reports/report_<run_id>.xlsx`
 - `reports/report_<run_id>_tables/*.csv`
+
+Important report exports include:
+
+- `reports/report_<run_id>_tables/source_run_trace.csv`
+- `reports/report_<run_id>_tables/source_warnings.csv`
+- `reports/report_<run_id>_tables/coverage_gaps.csv`
+- `reports/report_<run_id>_tables/propagation_coverage_gaps.csv`
+
+`source_run_trace.csv` includes `source_run_id`, `collector`, `mode`, `status`, `fallback_used`, and `warning_count`, so merged snapshots still show which collector path actually ran for each raw source run.
+
+`source_warnings.csv` now includes explicit `source_run_id`, `warning_index`, and `warning` columns, so merged snapshots still show which raw run produced each collector warning.
 
 ## Private Local Files
 
@@ -530,6 +552,12 @@ Validated smoke runs in this repository session on April 11, 2026:
 - `threads_web` against `https://www.threads.net/@zuck` completed successfully but returned `0` posts, `0` comments, and `0` propagations. The run status was `partial` and reported the expected best-effort public UI warning.
 - `instagram_web` against `https://www.instagram.com/zuck/` completed successfully and returned `12` posts, `0` comments, and `0` propagations. The run status was `partial`; the report also detected `3` reels.
 
+Validated smoke runs in this repository session on April 13, 2026:
+
+- `facebook_web` against `https://www.facebook.com/VolodymyrBugrov/` completed successfully and returned `10` posts, `3` extracted comments, and `0` propagations. The run status was `partial`. The report preserved visible comment counters, including a reel with `visible=99` and `extracted=1`, and repeated the explicit authenticated-browser login-wall warning.
+- `telegram_web` against `https://t.me/s/durov` completed successfully and returned `11` posts, `0` comments, and `0` propagations. The run status was `partial`. No linked discussion chat was visible, so the collector correctly stayed posts-only.
+- `x_web` against `https://x.com/OpenAI` completed successfully and returned `2` posts, `0` comments, and `0` propagations. The run status was `partial`. The report preserved visible reply counters (`386` and `762`) and emitted explicit warnings that the public detail pages exposed no reply articles.
+
 Not live-validated in this repository session:
 
 - `threads_api`
@@ -549,14 +577,16 @@ Propagation coverage is asymmetric by design.
 Platform-specific limits:
 
 - Facebook public-web collection is best-effort. The DOM can expose different content across runs.
+- Facebook public-web comment counters are now parsed from English, Ukrainian, and Russian surface text, and localized reply/control lines are filtered more aggressively out of extracted comment snapshots, but the DOM can still hide the actual comment list.
 - Facebook authenticated browser mode still only sees what the logged-in account can see.
 - Facebook propagation coverage is limited to shares and visible reshared surfaces the collectors can actually discover.
 - Telegram MTProto and web collection support one source channel per run, plus its linked discussion when visible.
 - Telegram web collection only works for public `t.me/s/...` feeds.
 - Telegram propagation coverage is limited to visible forwards or quoted surfaces available to the current collector.
+- Telegram MTProto now orders nested replies more defensively and scales fallback scan size from the visible thread size, but the scan is still bounded and can miss very large discussion threads.
 - Telegram Bot API only sees updates currently available to the bot. It does not backfill history.
 - X API reply coverage depends on the current search access window. With `search_scope: recent`, older replies can be missing.
-- X web collection can scrape public profile posts, but public reply visibility is often shallower than the reply counter suggests unless an authenticated browser session is used.
+- X web collection can scrape public profile posts, but public reply visibility is often shallower than the reply counter suggests unless an authenticated browser session is used. In the April 13, 2026 smoke run against `https://x.com/OpenAI`, visible counters (`386`, `762`) were preserved while reply article extraction stayed empty.
 - Threads API works best for owned-account scenarios. Threads web coverage is best-effort and, in the April 11, 2026 public smoke run against `@zuck`, it returned zero visible posts.
 - Instagram Graph API works for owned professional-account scenarios. Instagram web coverage is best-effort and public comments are often shallow. In the April 11, 2026 public smoke run against `@zuck`, it returned 12 posts and zero extracted comments.
 - Instagram propagation coverage is intentionally conservative and limited to surfaces that are directly observable.

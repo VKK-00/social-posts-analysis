@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -114,6 +115,14 @@ def test_public_web_time_parser_handles_relative_and_calendar_values() -> None:
     assert embedded == "2026-03-24T00:00:00+00:00"
 
 
+def test_public_web_time_parser_avoids_deprecated_yearless_strptime_path() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        parsed = PublicWebCollector._parse_post_timestamp("March 15")
+
+    assert parsed is not None
+
+
 def test_public_web_date_only_end_boundary_is_inclusive(project_config) -> None:
     collector = PublicWebCollector(project_config)
     project_config.date_range.end = "2026-04-02"
@@ -183,6 +192,13 @@ def test_public_web_metric_parser_reads_numeric_counts() -> None:
     assert PublicWebCollector._extract_metric_count("44") == 44
     assert PublicWebCollector._extract_metric_count("87 comments") == 87
     assert PublicWebCollector._extract_metric_count("Share") == 0
+
+
+def test_public_web_extract_comment_count_reads_localized_surface_text() -> None:
+    assert PublicWebCollector._extract_comment_count({"body_text": "99 comments"}) == 99
+    assert PublicWebCollector._extract_comment_count({"body_text": "99 коментарів"}) == 99
+    assert PublicWebCollector._extract_comment_count({"body_text": "Комментарии 42"}) == 42
+    assert PublicWebCollector._extract_comment_count({"meta_description": "Коментарі: 12"}) == 12
 
 
 def test_public_web_comment_article_limit_grows_for_larger_threads() -> None:
@@ -333,6 +349,20 @@ def test_public_web_clean_comment_text_keeps_reply_body_text() -> None:
     cleaned = PublicWebCollector._clean_comment_text(raw, "Volodymyr Ksienich", "19h")
 
     assert cleaned == "Olga Kotenko 100% переможе))"
+
+
+def test_public_web_clean_comment_text_removes_localized_reply_controls() -> None:
+    raw = "Ольга Котенко відповіла\nВідповісти\n1 відповідь\n19h"
+
+    cleaned = PublicWebCollector._clean_comment_text(raw, "Ольга Котенко відповіла", "19h")
+
+    assert cleaned == ""
+
+
+def test_public_web_select_comment_author_rejects_localized_control_values() -> None:
+    author = PublicWebCollector._select_comment_author("Відповісти", "Відповісти\n1 відповідь\n19h")
+
+    assert author is None
 
 
 def test_public_web_derives_author_from_glued_comment_prefix() -> None:
@@ -816,6 +846,126 @@ def test_telegram_collector_builds_nested_discussion_tree(tmp_path: Path, monkey
     assert manifest.posts[0].comments[1].reaction_breakdown_json == '{"🔥": 2}'
 
 
+def test_telegram_mtproto_discussion_fallback_scan_includes_nested_replies() -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+    discussion_entity = FakeChat(id=2002, title="Example Discussion")
+    parent_comment = FakeMessage(
+        id=71,
+        date=datetime(2026, 4, 1, 10, 5, tzinfo=UTC),
+        message="Top-level reply",
+        reply_to=FakeReplyTo(reply_to_msg_id=700),
+    )
+    nested_reply = FakeMessage(
+        id=72,
+        date=datetime(2026, 4, 1, 10, 6, tzinfo=UTC),
+        message="Nested reply",
+        reply_to=FakeReplyTo(reply_to_msg_id=71, reply_to_top_id=700),
+    )
+    unrelated_reply = FakeMessage(
+        id=73,
+        date=datetime(2026, 4, 1, 10, 7, tzinfo=UTC),
+        message="Other thread reply",
+        reply_to=FakeReplyTo(reply_to_msg_id=999, reply_to_top_id=999),
+    )
+
+    class FakeClient:
+        def iter_messages(self, chat, limit=None, reply_to=None, offset_date=None, reverse=None):  # noqa: ANN001, ANN002, ANN003, ANN202
+            if chat != discussion_entity:
+                return []
+            if reply_to == 700:
+                return [parent_comment]
+            return [parent_comment, nested_reply, unrelated_reply]
+
+    messages = list(
+        collector._iter_discussion_messages(
+            FakeClient(),
+            DiscussionContext(chat=discussion_entity, root_message_id=700),
+        )
+    )
+
+    assert [message.id for message in messages] == [71, 72]
+
+
+def test_telegram_mtproto_discussion_scan_limit_grows_with_expected_comment_count() -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+    discussion_entity = FakeChat(id=2002, title="Example Discussion")
+    calls: list[dict[str, int | None]] = []
+
+    class FakeClient:
+        def iter_messages(self, chat, limit=None, reply_to=None, offset_date=None, reverse=None):  # noqa: ANN001, ANN002, ANN003, ANN202
+            if chat == discussion_entity:
+                calls.append({"limit": limit, "reply_to": reply_to})
+            return []
+
+    list(
+        collector._iter_discussion_messages(
+            FakeClient(),
+            DiscussionContext(chat=discussion_entity, root_message_id=700, expected_comment_count=240),
+        )
+    )
+
+    assert calls[0] == {"limit": collector.settings.page_size, "reply_to": 700}
+    assert calls[1] == {"limit": 480, "reply_to": None}
+
+
+def test_telegram_mtproto_collect_reorders_discussion_messages_to_preserve_parent_chain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _telegram_config()
+    collector = TelegramMtprotoCollector(config)
+
+    source_entity = FakeChat(id=1001, title="Example Channel", username="example_channel")
+    discussion_entity = FakeChat(id=2002, title="Example Discussion")
+    post_message = FakeMessage(
+        id=7,
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        message="Channel post",
+        replies=FakeReplies(replies=2),
+    )
+    parent_comment = FakeMessage(
+        id=71,
+        date=datetime(2026, 4, 1, 10, 6, tzinfo=UTC),
+        message="Top-level reply",
+        sender=FakeSender(id=501, first_name="Alice"),
+        reply_to=FakeReplyTo(reply_to_msg_id=700),
+    )
+    nested_reply = FakeMessage(
+        id=72,
+        date=datetime(2026, 4, 1, 10, 5, tzinfo=UTC),
+        message="Nested reply",
+        sender=FakeSender(id=502, first_name="Bob"),
+        reply_to=FakeReplyTo(reply_to_msg_id=71, reply_to_top_id=700),
+    )
+    fake_client = SimpleNamespace(disconnect=lambda: None)
+
+    monkeypatch.setattr(collector, "_open_client", lambda: fake_client)
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+    monkeypatch.setattr(collector, "_resolve_discussion_entity", lambda client, source: discussion_entity)
+    monkeypatch.setattr(collector, "_iter_source_messages", lambda client, source: [post_message])
+    monkeypatch.setattr(
+        collector,
+        "_fetch_discussion_context",
+        lambda client, source, message: DiscussionContext(
+            chat=discussion_entity,
+            root_message_id=700,
+            expected_comment_count=2,
+        ),
+    )
+    monkeypatch.setattr(
+        collector,
+        "_iter_discussion_messages",
+        lambda client, context: [nested_reply, parent_comment],
+    )
+
+    manifest = collector.collect("tg-run-reordered", RawSnapshotStore(tmp_path / "raw"))
+
+    assert len(manifest.posts[0].comments) == 2
+    assert manifest.posts[0].comments[0].depth == 0
+    assert manifest.posts[0].comments[1].depth == 1
+    assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
+
+
 def test_x_api_collector_collects_posts_and_nested_replies(tmp_path: Path, monkeypatch) -> None:
     config = _x_config()
     collector = XApiCollector(config)
@@ -908,6 +1058,61 @@ def test_x_api_collector_collects_posts_and_nested_replies(tmp_path: Path, monke
     assert len(manifest.posts[0].comments) == 2
     assert [comment.depth for comment in manifest.posts[0].comments] == [0, 1]
     assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
+
+
+def test_x_api_collector_warns_when_quote_thread_has_reply_count_but_search_returns_no_replies(tmp_path: Path, monkeypatch) -> None:
+    collector = XApiCollector(_x_config())
+
+    def fake_get_json(self, endpoint, params=None):  # noqa: ANN001, ANN202
+        if endpoint == "/users/by/username/example_account":
+            return {
+                "data": {
+                    "id": "42",
+                    "name": "Example Account",
+                    "username": "example_account",
+                }
+            }
+        if endpoint == "/users/42/tweets":
+            return {
+                "data": [
+                    {
+                        "id": "100",
+                        "text": "Quoted post",
+                        "created_at": "2026-04-08T10:00:00Z",
+                        "conversation_id": "100",
+                        "author_id": "42",
+                        "public_metrics": {
+                            "like_count": 7,
+                            "retweet_count": 3,
+                            "reply_count": 2,
+                            "quote_count": 1,
+                        },
+                        "referenced_tweets": [{"type": "quoted", "id": "555"}],
+                    }
+                ],
+                "includes": {
+                    "users": [
+                        {"id": "42", "name": "Example Account", "username": "example_account"},
+                        {"id": "77", "name": "Origin Author", "username": "origin_author"},
+                    ],
+                    "tweets": [
+                        {"id": "555", "author_id": "77"},
+                    ],
+                },
+                "meta": {"result_count": 1},
+            }
+        if endpoint == "/tweets/search/recent":
+            return {"data": [], "includes": {"users": []}, "meta": {"result_count": 0}}
+        raise AssertionError(f"Unexpected request: endpoint={endpoint}, params={params}")
+
+    monkeypatch.setattr(collector, "_get_json", fake_get_json.__get__(collector, XApiCollector))
+    manifest = collector.collect("x-quote-run-1", RawSnapshotStore(tmp_path / "raw"))
+
+    assert len(manifest.posts) == 1
+    assert manifest.posts[0].is_propagation is True
+    assert manifest.posts[0].propagation_kind == "quote"
+    assert manifest.posts[0].comments == []
+    assert any("quote thread" in warning and "reply_count 2" in warning for warning in manifest.warnings)
 
 
 def test_x_api_recent_search_warning_for_old_start_date() -> None:
@@ -1011,6 +1216,7 @@ def test_telegram_web_collector_maps_public_discussion_comments(tmp_path: Path) 
                 "views": "1.2K",
                 "has_media": False,
                 "media_type": None,
+                "reply_text": "5 comments",
                 "reaction_breakdown": {"emoji-1": 5},
             }
         ],
@@ -1028,7 +1234,6 @@ def test_telegram_web_collector_maps_public_discussion_comments(tmp_path: Path) 
                 "author_id": "alice",
                 "author_name": "Alice",
                 "reply_permalink": "https://t.me/example_channel/10",
-                "reply_message_id": "10",
                 "reaction_breakdown": {"emoji-1": 2},
             },
             {
@@ -1040,7 +1245,6 @@ def test_telegram_web_collector_maps_public_discussion_comments(tmp_path: Path) 
                 "author_id": "bob",
                 "author_name": "Bob",
                 "reply_permalink": "https://t.me/example_discussion/100",
-                "reply_message_id": "100",
                 "reaction_breakdown": {},
             },
         ],
@@ -1054,9 +1258,13 @@ def test_telegram_web_collector_maps_public_discussion_comments(tmp_path: Path) 
     )
 
     assert len(merged[0].comments) == 2
+    assert posts[0].comments_count == 5
+    assert merged[0].comments_count == 5
     assert merged[0].comments[0].depth == 0
+    assert merged[0].comments[0].reply_to_message_id == "10"
     assert merged[0].comments[1].depth == 1
     assert merged[0].comments[1].parent_comment_id == merged[0].comments[0].comment_id
+    assert merged[0].comments[1].reply_to_message_id == "100"
 
 
 def test_telegram_web_collector_uses_forwarded_permalink_for_origin_post_id(tmp_path: Path) -> None:
@@ -1146,10 +1354,24 @@ def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkey
                     "permalink": "https://x.com/alice/status/201",
                     "author_name": "Alice",
                     "author_username": "alice",
+                    "reply_to_status_id": "200",
                     "reply_count": "0",
                     "retweet_count": "1",
                     "like_count": "4",
                     "view_count": "120",
+                },
+                {
+                    "status_id": "202",
+                    "created_at": "2026-04-08T10:06:00Z",
+                    "text": "Nested reply",
+                    "permalink": "https://x.com/bob/status/202",
+                    "author_name": "Bob",
+                    "author_username": "bob",
+                    "reply_to_status_id": "201",
+                    "reply_count": "0",
+                    "retweet_count": "0",
+                    "like_count": "2",
+                    "view_count": "80",
                 }
             ],
         },
@@ -1163,6 +1385,100 @@ def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkey
     assert replies[0].parent_post_id == posts[0].post_id
     assert replies[0].reply_to_message_id == "200"
     assert replies[0].reactions == 4
+    assert replies[0].depth == 0
+    assert replies[1].reply_to_message_id == "201"
+    assert replies[1].parent_comment_id == replies[0].comment_id
+    assert replies[1].depth == 1
+
+
+def test_x_web_collector_ignores_embedded_origin_status_in_quote_detail(tmp_path: Path, monkeypatch) -> None:
+    collector = XWebCollector(_x_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+    posts = collector._build_posts_from_payload(
+        {
+            "posts": [
+                {
+                    "status_id": "201",
+                    "created_at": "2026-04-08T10:00:00Z",
+                    "text": "Quoted X post",
+                    "permalink": "https://x.com/example_account/status/201",
+                    "author_name": "Example Account",
+                    "author_username": "example_account",
+                    "reply_count": "2",
+                    "retweet_count": "0",
+                    "like_count": "3",
+                    "view_count": "100",
+                    "has_media": False,
+                    "media_type": None,
+                    "propagation_kind": "quote",
+                    "origin_status_id": "555",
+                    "origin_permalink": "https://x.com/origin_author/status/555",
+                }
+            ]
+        },
+        source_id="example_account",
+        source_name="Example Account",
+        raw_store=raw_store,
+    )
+
+    class FakePage:
+        def goto(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    monkeypatch.setattr(collector, "_dismiss_cookie_banner", lambda page: None)
+    monkeypatch.setattr(collector, "_scroll_timeline", lambda page, passes=None: None)
+    monkeypatch.setattr(
+        collector,
+        "_extract_status_payload",
+        lambda page: {
+            "main_status_id": "201",
+            "replies": [
+                {
+                    "status_id": "555",
+                    "created_at": "2026-04-08T10:00:30Z",
+                    "text": "Embedded quoted origin",
+                    "permalink": "https://x.com/origin_author/status/555",
+                    "author_name": "Origin Author",
+                    "author_username": "origin_author",
+                    "reply_to_status_id": "",
+                    "origin_status_id": "",
+                    "propagation_kind": "",
+                    "reply_count": "0",
+                    "retweet_count": "0",
+                    "like_count": "10",
+                    "view_count": "300",
+                },
+                {
+                    "status_id": "202",
+                    "created_at": "2026-04-08T10:05:00Z",
+                    "text": "Actual visible reply",
+                    "permalink": "https://x.com/alice/status/202",
+                    "author_name": "Alice",
+                    "author_username": "alice",
+                    "reply_to_status_id": "201",
+                    "origin_status_id": "",
+                    "propagation_kind": "",
+                    "reply_count": "0",
+                    "retweet_count": "0",
+                    "like_count": "4",
+                    "view_count": "120",
+                },
+            ],
+        },
+    )
+
+    replies = collector._collect_replies_for_post(context=FakeContext(), post=posts[0], raw_store=raw_store)
+
+    assert len(replies) == 1
+    assert replies[0].comment_id.endswith(":202")
+    assert replies[0].reply_to_message_id == "201"
 
 
 def test_x_web_collector_builds_origin_post_id_from_origin_permalink(tmp_path: Path) -> None:

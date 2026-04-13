@@ -6,6 +6,44 @@ from pathlib import Path
 from .config import ProjectConfig
 
 
+def project_root_for_config(config_path: str | Path) -> Path:
+    resolved = Path(config_path).resolve()
+    return resolved.parent.parent if resolved.parent.name == "config" else resolved.parent
+
+
+def resolve_project_path(root: Path, value: str | Path) -> Path:
+    candidate = Path(value)
+    return candidate if candidate.is_absolute() else root / candidate
+
+
+def relative_output_paths_warning(config_path: str | Path, config: ProjectConfig) -> str | None:
+    resolved_config_path = Path(config_path).resolve()
+    if resolved_config_path.parent.name == "config":
+        return None
+
+    relative_fields = [
+        field_name
+        for field_name, raw_value in {
+            "raw_dir": config.paths.raw_dir,
+            "processed_dir": config.paths.processed_dir,
+            "review_dir": config.paths.review_dir,
+            "reports_dir": config.paths.reports_dir,
+            "database_path": config.paths.database_path,
+        }.items()
+        if not Path(raw_value).is_absolute()
+    ]
+    if not relative_fields:
+        return None
+
+    root = project_root_for_config(resolved_config_path)
+    fields = ", ".join(relative_fields)
+    return (
+        f"Config file {resolved_config_path} is outside a ./config directory. "
+        f"Relative output paths ({fields}) will be resolved relative to {root}. "
+        "Use absolute paths in the config if you want outputs elsewhere."
+    )
+
+
 @dataclass(slots=True)
 class ProjectPaths:
     root: Path
@@ -19,11 +57,11 @@ class ProjectPaths:
     def from_config(cls, root: Path, config: ProjectConfig) -> "ProjectPaths":
         return cls(
             root=root,
-            raw_root=root / config.paths.raw_dir,
-            processed_root=root / config.paths.processed_dir,
-            review_root=root / config.paths.review_dir,
-            reports_root=root / config.paths.reports_dir,
-            database_path=root / config.paths.database_path,
+            raw_root=resolve_project_path(root, config.paths.raw_dir),
+            processed_root=resolve_project_path(root, config.paths.processed_dir),
+            review_root=resolve_project_path(root, config.paths.review_dir),
+            reports_root=resolve_project_path(root, config.paths.reports_dir),
+            database_path=resolve_project_path(root, config.paths.database_path),
         )
 
     def ensure(self) -> None:

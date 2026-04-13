@@ -162,13 +162,23 @@ class XWebCollector(BaseCollector):
         finally:
             page.close()
 
+        reply_items = self._filtered_detail_reply_items(post, detail_payload)
         reply_snapshots: list[CommentSnapshot] = []
-        for item in detail_payload.get("replies") or []:
+        comment_id_map: dict[str, str] = {}
+        depth_map: dict[str, int] = {}
+        for item in reply_items:
             if not self._within_range(item.get("created_at")):
                 continue
             status_id = str(item.get("status_id") or "")
             if not status_id:
                 continue
+            reply_to_status_id = str(item.get("reply_to_status_id") or self._native_status_id(post.post_id))
+            parent_comment_id = (
+                comment_id_map.get(reply_to_status_id)
+                if reply_to_status_id != self._native_status_id(post.post_id)
+                else None
+            )
+            depth = depth_map.get(parent_comment_id, -1) + 1 if parent_comment_id else 0
             comment_id = f"x:{post.source_id}:{self._native_status_id(post.post_id)}:comment:{status_id}"
             reaction_breakdown = {
                 "reply_count": parse_compact_number(item.get("reply_count")),
@@ -182,8 +192,8 @@ class XWebCollector(BaseCollector):
                     comment_id=comment_id,
                     platform="x",
                     parent_post_id=post.post_id,
-                    parent_comment_id=None,
-                    reply_to_message_id=self._native_status_id(post.post_id),
+                    parent_comment_id=parent_comment_id,
+                    reply_to_message_id=reply_to_status_id,
                     thread_root_post_id=post.post_id,
                     created_at=item.get("created_at"),
                     message=item.get("text"),
@@ -191,7 +201,7 @@ class XWebCollector(BaseCollector):
                     reactions=reaction_breakdown["like_count"],
                     reaction_breakdown_json=json.dumps(reaction_breakdown, ensure_ascii=False),
                     source_collector=self.name,
-                    depth=0,
+                    depth=depth,
                     raw_path=str(raw_path),
                     author=AuthorSnapshot(
                         author_id=item.get("author_username"),
@@ -200,7 +210,22 @@ class XWebCollector(BaseCollector):
                     ),
                 )
             )
+            comment_id_map[status_id] = comment_id
+            depth_map[comment_id] = depth
         return reply_snapshots
+
+    def _filtered_detail_reply_items(self, post: PostSnapshot, detail_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        main_status_id = str(detail_payload.get("main_status_id") or self._native_status_id(post.post_id))
+        origin_status_id = str(post.origin_external_id or "")
+        filtered_items: list[dict[str, Any]] = []
+        for item in detail_payload.get("replies") or []:
+            status_id = str(item.get("status_id") or "")
+            if not status_id or status_id == main_status_id:
+                continue
+            if post.is_propagation and origin_status_id and status_id == origin_status_id:
+                continue
+            filtered_items.append(item)
+        return filtered_items
 
     def _extract_profile_payload(self, page: Any) -> dict[str, Any]:
         payload = page.evaluate(
@@ -276,6 +301,7 @@ class XWebCollector(BaseCollector):
                   .find((anchor) => !anchor.href.includes('/analytics'));
                 const statusLinks = Array.from(node.querySelectorAll('a[href*="/status/"]'))
                   .filter((anchor) => !anchor.href.includes('/analytics'));
+                const replyToPermalink = statusLinks.length > 1 ? (statusLinks[1]?.href || '') : '';
                 const timeNode = node.querySelector('time');
                 const textNodes = Array.from(node.querySelectorAll('[data-testid="tweetText"]'));
                 const socialContext = Array.from(node.querySelectorAll('span'))
@@ -293,6 +319,7 @@ class XWebCollector(BaseCollector):
                 return {
                   permalink: permalinkNode?.href || '',
                   status_id: permalinkNode ? (permalinkNode.href.split('/status/')[1] || '').split(/[/?#]/)[0] : '',
+                  reply_to_status_id: replyToPermalink ? ((replyToPermalink.split('/status/')[1] || '').split(/[/?#]/)[0]) : '',
                   origin_permalink: statusLinks.length > 1 ? (statusLinks[1]?.href || '') : '',
                   origin_status_id: statusLinks.length > 1 ? ((statusLinks[1]?.href.split('/status/')[1] || '').split(/[/?#]/)[0]) : '',
                   propagation_kind: /quoted/i.test(socialContext)
