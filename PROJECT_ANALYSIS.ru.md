@@ -687,3 +687,41 @@ Runtime assumptions:
 - `threads_api` больше не warning-only для `source.search`;
 - `threads_web` тоже больше не warning-only для `source.search`, но только в post-level discovery режиме;
 - для `threads_web` reply/comment discovery по public search UI всё ещё остаётся известным ограничением и должно сохраняться как warning в report.
+
+## Обновление: усиление profile-feed extraction в threads_web
+
+После live smoke `person_monitor` на Threads стало видно, что search discovery уже работает, но следующий шаг может терять найденный внешний профиль на стадии profile-feed extraction.
+
+Проблема была в DOM:
+
+- public profile page Threads часто не отдаёт посты через `article`;
+- реальные post cards на profile surface лежат в `data-pressable-container="true"`;
+- из-за этого [src/social_posts_analysis/collectors/threads_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\threads_web.py) мог успешно найти внешний аккаунт через search, но затем вернуть `posts: []` при чтении его профиля.
+
+Что изменено:
+
+- `ThreadsWebCollector._extract_profile_payload(...)` теперь после старого `article` path собирает и fallback-кандидатов из `data-pressable-container="true"`;
+- fallback сохраняет `raw_text`, `permalink`, `status_id`, `created_at`, `author_name`, `author_username`, media-признаки и возможный `origin_permalink`;
+- `ThreadsWebCollector._merge_profile_post_candidates(...)` объединяет старый и новый paths по `status_id` и выбирает более содержательный вариант;
+- `ThreadsWebCollector._extract_visible_post_text(...)` очищает `raw_text` до реального тела поста и отрезает:
+  - username/display name;
+  - time hint вроде `1d`;
+  - metric tail вроде `120`, `12`, `5` или строки вида `120 replies 5 likes`;
+  - footer/UI noise.
+- `ThreadsWebCollector._build_posts_from_payload(...)` теперь также протаскивает `raw_text` в `PostSnapshot`, чтобы raw manifest и downstream debug не теряли исходный profile-card текст.
+
+Почему выбран именно этот путь:
+
+- не выбран вариант «полностью отказаться от `article` и оставить только новый DOM path», потому что Threads public UI нестабилен и старый path всё ещё может быть полезен на части surfaces;
+- не выбран вариант «просто писать весь `raw_text` в `message`», потому что это загрязняет downstream normalization и person-monitor reports метриками и UI-текстом.
+
+Фактический эффект:
+
+- найденные внешние profiles в `person_monitor` теперь могут вернуть реальные `posts`, даже если profile page не содержит `article`;
+- detail/reply extraction в `threads_web` по-прежнему остаётся best-effort и зависит от текущего public DOM.
+
+Когда этот раздел нужно обновлять дальше:
+
+- если Threads снова изменит profile DOM и fallback перестанет видеть post cards;
+- если detail/reply extraction тоже будет переведён на `pressable-container` fallback;
+- если live smoke покажет новый тип DOM-шума в `raw_text`, который нужно вычищать из `message`.

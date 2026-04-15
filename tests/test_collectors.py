@@ -1986,6 +1986,7 @@ def test_threads_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path) 
                     "status_id": "200",
                     "created_at": "2026-04-08T10:00:00Z",
                     "text": "Visible threads post",
+                    "raw_text": "Visible threads post\n12\n5",
                     "permalink": "https://www.threads.net/@example_account/post/200",
                     "author_name": "Example Account",
                     "author_username": "example_account",
@@ -2008,6 +2009,7 @@ def test_threads_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path) 
 
     assert posts[0].is_propagation is True
     assert posts[0].origin_post_id == "threads:origin:150"
+    assert posts[0].raw_text == "Visible threads post\n12\n5"
     assert posts[0].comments_count == 12
     assert posts[0].views == 4500
 
@@ -2113,6 +2115,145 @@ def test_threads_web_search_surface_payloads_are_post_only_and_canonicalize_prof
         }
     ]
     assert comment_only_surfaces == []
+
+
+def test_threads_web_extract_visible_post_text_from_pressable_profile_card() -> None:
+    raw_text = (
+        "arianvzn\n"
+        "1d\n"
+        "CLAUDE CODE V2.1.100 SILENTLY ADDS 20,000 INVISIBLE TOKENS TO EVERY\n"
+        "SINGLE REQUEST AND NO ONE TOLD YOU.\n"
+        "Someone set up an HTTP\n"
+        "proxy to catch it.\n"
+        "Same project.\n"
+        "Same prompt.\n"
+        "Same account.\n"
+        "v2.1.98: 49,726 tokens\n"
+        "v2.1.100: 69,922 tokens\n"
+        "The fix: npx claude-code@2.1.98\n"
+        "120\n"
+        "12\n"
+        "5\n"
+        "40"
+    )
+
+    extracted = ThreadsWebCollector._extract_visible_post_text(
+        raw_text,
+        author_username="arianvzn",
+        author_name="arianvzn",
+    )
+
+    assert extracted == (
+        "CLAUDE CODE V2.1.100 SILENTLY ADDS 20,000 INVISIBLE TOKENS TO EVERY\n"
+        "SINGLE REQUEST AND NO ONE TOLD YOU.\n"
+        "Someone set up an HTTP\n"
+        "proxy to catch it.\n"
+        "Same project.\n"
+        "Same prompt.\n"
+        "Same account.\n"
+        "v2.1.98: 49,726 tokens\n"
+        "v2.1.100: 69,922 tokens\n"
+        "The fix: npx claude-code@2.1.98"
+    )
+
+
+def test_threads_web_merge_profile_post_candidates_uses_pressable_fallback_when_article_extract_is_empty() -> None:
+    merged = ThreadsWebCollector._merge_profile_post_candidates(
+        [
+            {
+                "status_id": "DXGnV_UDC9L",
+                "created_at": "2026-04-14T10:00:00Z",
+                "permalink": "https://www.threads.net/@arianvzn/post/DXGnV_UDC9L",
+                "text": "",
+                "author_name": "arianvzn",
+                "author_username": "arianvzn",
+                "reply_count": "",
+                "repost_count": "",
+                "like_count": "",
+                "view_count": "",
+                "has_media": False,
+                "media_type": None,
+            }
+        ],
+        [
+            {
+                "status_id": "DXGnV_UDC9L",
+                "created_at": "2026-04-14T10:00:00Z",
+                "permalink": "https://www.threads.net/@arianvzn/post/DXGnV_UDC9L",
+                "text": "",
+                "raw_text": "arianvzn\n1d\nImportant external post body\n120\n12\n5",
+                "author_name": "arianvzn",
+                "author_username": "arianvzn",
+                "reply_count": "",
+                "repost_count": "",
+                "like_count": "",
+                "view_count": "",
+                "has_media": False,
+                "media_type": None,
+            }
+        ],
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["text"] == "Important external post body"
+
+
+def test_threads_web_extract_profile_payload_merges_pressable_profile_posts() -> None:
+    collector = ThreadsWebCollector(_threads_web_config())
+
+    class FakePage:
+        def evaluate(self, script: str) -> dict[str, Any]:
+            assert "pressablePosts" in script
+            return {
+                "source_name": "arianvzn",
+                "source_id": "arianvzn",
+                "source_url": "https://www.threads.com/@arianvzn",
+                "posts": [],
+                "pressable_posts": [
+                    {
+                        "status_id": "DXGnV_UDC9L",
+                        "created_at": "2026-04-14T10:00:00Z",
+                        "permalink": "https://www.threads.com/@arianvzn/post/DXGnV_UDC9L",
+                        "origin_permalink": "",
+                        "origin_status_id": "",
+                        "propagation_kind": "",
+                        "text": "",
+                        "raw_text": "arianvzn\n1d\nImportant external post body\n120\n12\n5",
+                        "author_name": "arianvzn",
+                        "author_username": "arianvzn",
+                        "reply_count": "",
+                        "repost_count": "",
+                        "like_count": "",
+                        "view_count": "",
+                        "has_media": False,
+                        "media_type": None,
+                    }
+                ],
+            }
+
+    payload = collector._extract_profile_payload(FakePage())
+
+    assert payload["source_id"] == "arianvzn"
+    assert payload["posts"] == [
+        {
+            "status_id": "DXGnV_UDC9L",
+            "created_at": "2026-04-14T10:00:00Z",
+            "permalink": "https://www.threads.com/@arianvzn/post/DXGnV_UDC9L",
+            "origin_permalink": "",
+            "origin_status_id": "",
+            "propagation_kind": "",
+            "text": "Important external post body",
+            "raw_text": "arianvzn\n1d\nImportant external post body\n120\n12\n5",
+            "author_name": "arianvzn",
+            "author_username": "arianvzn",
+            "reply_count": "",
+            "repost_count": "",
+            "like_count": "",
+            "view_count": "",
+            "has_media": False,
+            "media_type": None,
+        }
+    ]
 
 
 def test_instagram_graph_api_collector_collects_posts_and_nested_comments(tmp_path: Path, monkeypatch) -> None:

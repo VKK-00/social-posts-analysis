@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -145,6 +146,7 @@ class ThreadsWebCollector(BaseCollector):
                     is_propagation=bool(item.get("propagation_kind")),
                     created_at=item.get("created_at"),
                     message=item.get("text"),
+                    raw_text=item.get("raw_text"),
                     permalink=item.get("permalink"),
                     reactions=parse_compact_number(item.get("like_count")),
                     shares=parse_compact_number(item.get("repost_count")),
@@ -280,7 +282,7 @@ class ThreadsWebCollector(BaseCollector):
         return list(surfaces.values())
 
     def _extract_profile_payload(self, page: Any) -> dict[str, Any]:
-        return page.evaluate(
+        payload = page.evaluate(
             """
             () => {
               const articles = Array.from(document.querySelectorAll('article'));
@@ -317,15 +319,66 @@ class ThreadsWebCollector(BaseCollector):
                   media_type: node.querySelector('video') ? 'video' : (node.querySelector('img') ? 'photo' : null),
                 };
               }).filter((item) => item.status_id);
+              const pressablePosts = Array.from(document.querySelectorAll('[data-pressable-container="true"]')).map((node) => {
+                const authorLink = Array.from(node.querySelectorAll('a[href^="/@"]')).find((anchor) => {
+                  const href = anchor.getAttribute('href') || '';
+                  return /^\\/@[^/]+$/.test(href);
+                });
+                const postLinks = Array.from(new Set(Array.from(node.querySelectorAll('a[href*="/post/"]'))
+                  .map((anchor) => anchor.href || '')
+                  .filter((href) => href && !href.includes('/media'))));
+                const permalink = postLinks[0] || '';
+                if (!authorLink || !permalink) {
+                  return null;
+                }
+                const statusId = permalink ? permalink.split('/post/')[1].split(/[/?#]/)[0] : '';
+                if (!statusId) {
+                  return null;
+                }
+                const originPermalink = postLinks.length > 1 ? (postLinks[1] || '') : '';
+                const originStatusId = originPermalink ? originPermalink.split('/post/')[1].split(/[/?#]/)[0] : '';
+                const authorHref = authorLink.getAttribute('href') || '';
+                const authorUsername = authorHref.split('@')[1]?.split(/[/?#]/)[0] || '';
+                const timeNode = node.querySelector('time');
+                return {
+                  permalink,
+                  status_id: statusId,
+                  origin_permalink: originPermalink,
+                  origin_status_id: originStatusId,
+                  propagation_kind: originStatusId ? 'quote' : '',
+                  created_at: timeNode?.getAttribute('datetime') || null,
+                  text: '',
+                  raw_text: (node.innerText || '').trim(),
+                  author_name: (authorLink.innerText || '').trim() || authorUsername,
+                  author_username: authorUsername,
+                  reply_count: '',
+                  repost_count: '',
+                  like_count: '',
+                  view_count: '',
+                  has_media: Boolean(node.querySelector('img, video')),
+                  media_type: node.querySelector('video') ? 'video' : (node.querySelector('img') ? 'photo' : null),
+                };
+              }).filter((item) => item && item.status_id);
               return {
                 source_name: (document.querySelector('h1')?.innerText || document.title || '').trim(),
                 source_id: (location.pathname.split('@')[1] || '').split(/[/?#]/)[0],
                 source_url: location.href,
                 posts,
+                pressable_posts: pressablePosts,
               };
             }
             """
         )
+        merged_posts = self._merge_profile_post_candidates(
+            payload.get("posts") or [],
+            payload.get("pressable_posts") or [],
+        )
+        return {
+            "source_name": payload.get("source_name"),
+            "source_id": payload.get("source_id"),
+            "source_url": payload.get("source_url"),
+            "posts": merged_posts,
+        }
 
     def _extract_detail_payload(self, page: Any) -> dict[str, Any]:
         return page.evaluate(
@@ -365,6 +418,160 @@ class ThreadsWebCollector(BaseCollector):
             }
             """
         )
+
+    @classmethod
+    def _merge_profile_post_candidates(
+        cls,
+        primary_posts: list[dict[str, Any]],
+        fallback_posts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for candidate in primary_posts:
+            status_id = str(candidate.get("status_id") or "").strip()
+            if not status_id:
+                continue
+            merged[status_id] = candidate
+        for candidate in fallback_posts:
+            normalized = cls._normalize_profile_fallback_candidate(candidate)
+            status_id = str(normalized.get("status_id") or "").strip()
+            if not status_id:
+                continue
+            existing = merged.get(status_id)
+            if existing is None or cls._profile_post_score(normalized) > cls._profile_post_score(existing):
+                merged[status_id] = normalized
+        return list(merged.values())
+
+    @classmethod
+    def _normalize_profile_fallback_candidate(cls, candidate: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(candidate)
+        normalized["text"] = cls._extract_visible_post_text(
+            candidate.get("raw_text"),
+            author_username=str(candidate.get("author_username") or ""),
+            author_name=str(candidate.get("author_name") or ""),
+        )
+        return normalized
+
+    @staticmethod
+    def _profile_post_score(item: dict[str, Any]) -> int:
+        score = 0
+        if item.get("text"):
+            score += 4
+        if item.get("created_at"):
+            score += 2
+        if item.get("permalink"):
+            score += 2
+        if item.get("origin_status_id"):
+            score += 1
+        if item.get("has_media"):
+            score += 1
+        return score
+
+    @classmethod
+    def _extract_visible_post_text(
+        cls,
+        raw_text: str | None,
+        *,
+        author_username: str,
+        author_name: str,
+    ) -> str:
+        if not raw_text:
+            return ""
+        lines = [line.strip() for line in re.split(r"[\r\n]+", raw_text) if line.strip()]
+        if not lines:
+            return ""
+        author_tokens = {
+            author_username.strip().casefold(),
+            author_name.strip().casefold(),
+        }
+        output: list[str] = []
+        started = False
+        for line in lines:
+            lowered = line.casefold()
+            if not started and (
+                not lowered
+                or lowered in author_tokens
+                or cls._is_threads_time_hint(line)
+                or cls._is_threads_profile_ui_line(line)
+            ):
+                continue
+            if started and (
+                cls._is_threads_metric_line(line)
+                or cls._is_threads_post_stop_line(line)
+            ):
+                break
+            if cls._is_threads_post_stop_line(line):
+                if started:
+                    break
+                continue
+            output.append(line)
+            started = True
+        return "\n".join(output).strip()
+
+    @staticmethod
+    def _is_threads_time_hint(value: str) -> bool:
+        stripped = value.strip()
+        return bool(
+            re.fullmatch(r"\d+[smhdwy]", stripped, flags=re.IGNORECASE)
+            or re.fullmatch(r"\d{2}/\d{2}/\d{2,4}", stripped)
+        )
+
+    @staticmethod
+    def _is_threads_metric_line(value: str) -> bool:
+        return bool(re.fullmatch(r"\d+(?:[.,]\d+)?[KMB]?", value.strip(), flags=re.IGNORECASE))
+
+    @staticmethod
+    def _is_threads_metric_summary_line(value: str) -> bool:
+        normalized = re.sub(r"[·•]", " ", value.strip().casefold())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return False
+        return bool(
+            re.fullmatch(
+                r"(?:\d+(?:[.,]\d+)?[kmb]?\s+(?:reply|replies|repost|reposts|like|likes|view|views)\s*)+",
+                normalized,
+            )
+        )
+
+    @staticmethod
+    def _is_threads_profile_ui_line(value: str) -> bool:
+        stripped = value.strip()
+        lowered = stripped.casefold()
+        if lowered in {
+            "log in",
+            "follow",
+            "mention",
+            "threads",
+            "replies",
+            "media",
+            "reposts",
+            "thread",
+            "related threads",
+        }:
+            return True
+        return bool(re.fullmatch(r"\d+(?:[.,]\d+)?[kmb]?\s+followers", lowered))
+
+    @classmethod
+    def _is_threads_post_stop_line(cls, value: str) -> bool:
+        stripped = value.strip()
+        lowered = stripped.casefold()
+        if cls._is_threads_profile_ui_line(stripped):
+            return True
+        if cls._is_threads_metric_summary_line(stripped):
+            return True
+        if lowered.startswith("log in to see more from"):
+            return True
+        if lowered.startswith("© ") or lowered.startswith("â© "):
+            return True
+        if lowered in {
+            "threads terms",
+            "privacy policy",
+            "cookies policy",
+            "report a problem",
+        }:
+            return True
+        if lowered.startswith("allow the use of cookies"):
+            return True
+        return False
 
     @staticmethod
     def _search_item_matches_kind(
