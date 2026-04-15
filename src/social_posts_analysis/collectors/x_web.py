@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import (
@@ -86,6 +86,49 @@ class XWebCollector(BaseCollector):
             source=source_snapshot,
             posts=updated_posts,
         )
+
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        from playwright.sync_api import sync_playwright
+
+        if not include_posts and not include_comments:
+            return []
+
+        discovered: dict[str, dict[str, str | None]] = {}
+        with sync_playwright() as playwright:
+            runtime = self._open_collection_context(playwright)
+            try:
+                for query in queries:
+                    page = runtime.context.new_page()
+                    try:
+                        page.goto(
+                            self._search_url(query),
+                            wait_until="domcontentloaded",
+                            timeout=int(self.settings.timeout_seconds * 1000),
+                        )
+                        self._dismiss_cookie_banner(page)
+                        self._scroll_timeline(page, passes=self._search_scroll_passes(max_items_per_query))
+                        payload = self._extract_search_payload(page)
+                    finally:
+                        page.close()
+                    for item in self._search_surface_payloads(
+                        payload,
+                        include_posts=include_posts,
+                        include_comments=include_comments,
+                    ):
+                        source_id = self._normalized_source_username(item.get("source_id"))
+                        if not source_id:
+                            continue
+                        discovered[source_id] = item
+            finally:
+                runtime.close()
+        return list(discovered.values())
 
     def _build_posts_from_payload(
         self,
@@ -291,6 +334,42 @@ class XWebCollector(BaseCollector):
         )
         return payload
 
+    def _extract_search_payload(self, page: Any) -> dict[str, Any]:
+        payload = page.evaluate(
+            """
+            () => {
+              const articleNodes = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+              const results = articleNodes.map((node) => {
+                const permalinkNode = Array.from(node.querySelectorAll('a[href*="/status/"]'))
+                  .find((anchor) => !anchor.href.includes('/analytics'));
+                const timeNode = node.querySelector('time');
+                const textNodes = Array.from(node.querySelectorAll('[data-testid="tweetText"]'));
+                const contextBits = Array.from(node.querySelectorAll('span'))
+                  .map((span) => (span.textContent || '').trim())
+                  .filter(Boolean);
+                const userNameNode = node.querySelector('[data-testid="User-Name"]');
+                const nameLinks = userNameNode ? Array.from(userNameNode.querySelectorAll('a')) : [];
+                const authorName = (nameLinks[0]?.textContent || '').trim();
+                const authorUsername = ((nameLinks[1]?.textContent || '').trim() || '').replace(/^@/, '');
+                return {
+                  permalink: permalinkNode?.href || '',
+                  status_id: permalinkNode ? (permalinkNode.href.split('/status/')[1] || '').split(/[/?#]/)[0] : '',
+                  created_at: timeNode?.getAttribute('datetime') || null,
+                  text: textNodes.length ? (textNodes[0].innerText || '').trim() : '',
+                  author_name: authorName,
+                  author_username: authorUsername,
+                  is_reply: contextBits.some((value) => /replying to/i.test(value)),
+                };
+              }).filter((item) => item.status_id && item.author_username);
+              return {
+                search_url: location.href,
+                results,
+              };
+            }
+            """
+        )
+        return payload
+
     def _extract_status_payload(self, page: Any) -> dict[str, Any]:
         payload = page.evaluate(
             """
@@ -346,6 +425,34 @@ class XWebCollector(BaseCollector):
         )
         return payload
 
+    def _search_surface_payloads(
+        self,
+        payload: dict[str, Any],
+        *,
+        include_posts: bool,
+        include_comments: bool,
+    ) -> list[dict[str, str | None]]:
+        surfaces: dict[str, dict[str, str | None]] = {}
+        for item in payload.get("results") or []:
+            if not self._within_range(item.get("created_at")):
+                continue
+            if not self._search_item_matches_kind(
+                item,
+                include_posts=include_posts,
+                include_comments=include_comments,
+            ):
+                continue
+            author_username = self._normalized_source_username(item.get("author_username"))
+            if not author_username:
+                continue
+            surfaces[author_username] = {
+                "source_id": author_username,
+                "source_name": (item.get("author_name") or None),
+                "source_url": f"https://x.com/{author_username}",
+                "source_type": "account",
+            }
+        return list(surfaces.values())
+
     def _open_collection_context(self, playwright: Any) -> WebCollectorRuntime:
         return open_web_runtime(
             playwright,
@@ -379,6 +486,28 @@ class XWebCollector(BaseCollector):
             passes=passes,
             wheel_y=2600,
         )
+
+    @staticmethod
+    def _search_item_matches_kind(
+        item: dict[str, Any],
+        *,
+        include_posts: bool,
+        include_comments: bool,
+    ) -> bool:
+        if include_posts and include_comments:
+            return True
+        is_reply = bool(item.get("is_reply"))
+        if include_posts and not is_reply:
+            return True
+        if include_comments and is_reply:
+            return True
+        return False
+
+    def _search_url(self, query: str) -> str:
+        return f"https://x.com/search?q={quote_plus(query)}&src=typed_query&f=live"
+
+    def _search_scroll_passes(self, max_items_per_query: int) -> int:
+        return max(2, min(self.settings.max_scrolls, max_items_per_query // 10 + 1))
 
     def _resolve_profile_url(self) -> str:
         if self.config.source.url:

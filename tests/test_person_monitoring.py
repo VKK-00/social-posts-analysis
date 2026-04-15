@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from social_posts_analysis.collectors.telegram_mtproto import TelegramMtprotoCollector
+from social_posts_analysis.collectors.telegram_web import TelegramWebCollector
+from social_posts_analysis.collectors.threads_api import ThreadsApiCollector
+from social_posts_analysis.collectors.threads_web import ThreadsWebCollector
 from social_posts_analysis.collectors.x_api import XApiCollector
+from social_posts_analysis.collectors.x_web import XWebCollector
 from social_posts_analysis.config import ProjectConfig, WatchlistSourceConfig
 from social_posts_analysis.contracts import (
     AuthorSnapshot,
@@ -125,6 +130,242 @@ def test_person_monitor_x_api_search_discovers_external_sources(project_config, 
     assert warnings == []
     assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
         ("external_a", "External A", "search")
+    ]
+
+
+def test_person_monitor_telegram_mtproto_search_discovers_external_sources(project_config, monkeypatch) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "telegram"
+    project_config.source.source_id = "subject_channel"
+    project_config.source.source_name = "Subject Channel"
+    project_config.source.url = "https://t.me/subject_channel"
+    project_config.source.aliases = ["Subject Channel"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["subject_channel"]
+    project_config.collector.mode = "mtproto"
+    project_config.collector.telegram_mtproto.enabled = True
+    project_config.collector.telegram_mtproto.session_file = ".sessions/example"
+    project_config.collector.telegram_mtproto.api_id = 12345
+    project_config.collector.telegram_mtproto.api_hash = "hash"
+
+    monkeypatch.setattr(
+        TelegramMtprotoCollector,
+        "discover_person_monitor_sources",
+        lambda self, **kwargs: [
+            {
+                "source_id": "subject_channel",
+                "source_name": "Subject Channel",
+                "source_url": "https://t.me/subject_channel",
+                "source_type": "channel",
+            },
+            {
+                "source_id": "external_group",
+                "source_name": "External Group",
+                "source_url": "https://t.me/external_group",
+                "source_type": "group",
+            },
+        ],
+    )
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
+        ("external_group", "External Group", "search")
+    ]
+
+
+def test_person_monitor_telegram_web_search_discovers_external_sources(project_config, monkeypatch) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "telegram"
+    project_config.source.source_id = "subject_channel"
+    project_config.source.source_name = "Subject Channel"
+    project_config.source.url = "https://t.me/subject_channel"
+    project_config.source.aliases = ["Subject Channel"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["https://t.me/s/external_channel?q=subject_channel"]
+    project_config.collector.mode = "web"
+    project_config.collector.telegram_web.enabled = True
+
+    monkeypatch.setattr(
+        TelegramWebCollector,
+        "discover_person_monitor_sources",
+        lambda self, **kwargs: [
+            {
+                "source_id": "subject_channel",
+                "source_name": "Subject Channel",
+                "source_url": "https://t.me/s/subject_channel",
+                "source_type": "channel",
+            },
+            {
+                "source_id": "external_channel",
+                "source_name": "External Channel",
+                "source_url": "https://t.me/s/external_channel?q=subject_channel",
+                "source_type": "channel",
+            },
+        ],
+    )
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
+        ("external_channel", "External Channel", "search")
+    ]
+
+
+def test_person_monitor_threads_api_search_discovers_external_sources(project_config, monkeypatch) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "threads"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://www.threads.net/@subject_handle"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["subject_handle"]
+    project_config.collector.mode = "threads_api"
+    project_config.collector.threads_api.enabled = True
+    project_config.collector.threads_api.access_token = "token"
+
+    monkeypatch.setattr(
+        ThreadsApiCollector,
+        "discover_person_monitor_sources",
+        lambda self, **kwargs: [
+            {
+                "source_id": "subject_handle",
+                "source_name": "Subject Name",
+                "source_url": "https://www.threads.net/@subject_handle",
+                "source_type": "account",
+            },
+            {
+                "source_id": "external_threads",
+                "source_name": "external_threads",
+                "source_url": "https://www.threads.net/@external_threads",
+                "source_type": "account",
+            },
+        ],
+    )
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
+        ("external_threads", "external_threads", "search")
+    ]
+
+
+def test_person_monitor_threads_web_search_discovers_external_sources(project_config, monkeypatch) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "threads"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://www.threads.net/@subject_handle"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["subject_handle"]
+    project_config.source.search.include_comments = False
+    project_config.collector.mode = "web"
+    project_config.collector.threads_web.enabled = True
+
+    monkeypatch.setattr(
+        ThreadsWebCollector,
+        "discover_person_monitor_sources",
+        lambda self, **kwargs: [
+            {
+                "source_id": "subject_handle",
+                "source_name": "Subject Name",
+                "source_url": "https://www.threads.net/@subject_handle",
+                "source_type": "account",
+            },
+            {
+                "source_id": "external_threads_web",
+                "source_name": "external_threads_web",
+                "source_url": "https://www.threads.net/@external_threads_web",
+                "source_type": "account",
+            },
+        ],
+    )
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
+        ("external_threads_web", "external_threads_web", "search")
+    ]
+
+
+def test_person_monitor_threads_web_search_warns_for_comment_only_mode(project_config) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "threads"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://www.threads.net/@subject_handle"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["subject_handle"]
+    project_config.source.search.include_posts = False
+    project_config.source.search.include_comments = True
+    project_config.collector.mode = "web"
+    project_config.collector.threads_web.enabled = True
+
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert discovery_sources == []
+    assert observed_rows == []
+    assert warnings == [
+        "Threads web search discovery currently derives external surfaces from public search result posts only; reply/comment-only discovery is not supported.",
+        "Threads web search discovery completed but found no external surfaces for the configured queries.",
+    ]
+
+
+def test_person_monitor_x_web_search_discovers_external_sources(project_config, monkeypatch) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "x"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://x.com/subject_handle"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["subject_handle"]
+    project_config.collector.mode = "web"
+    project_config.collector.x_web.enabled = True
+
+    monkeypatch.setattr(
+        XWebCollector,
+        "discover_person_monitor_sources",
+        lambda self, **kwargs: [
+            {
+                "source_id": "subject_handle",
+                "source_name": "Subject Name",
+                "source_url": "https://x.com/subject_handle",
+                "source_type": "account",
+            },
+            {
+                "source_id": "external_b",
+                "source_name": "External B",
+                "source_url": "https://x.com/external_b",
+                "source_type": "account",
+            },
+        ],
+    )
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
+        ("external_b", "External B", "search")
     ]
 
 
@@ -320,7 +561,7 @@ def test_person_monitor_report_context_exposes_observed_sources_and_match_export
         mode="web",
         status="partial",
         request_signature="sig-1",
-        warnings=["Search discovery is not supported for x with collector.mode='web'; continuing with watchlist only."],
+        warnings=["X web extraction is best-effort and public replies may be limited without an authenticated browser session."],
         source=root_source,
         posts=[
             PostSnapshot(
@@ -372,16 +613,6 @@ def test_person_monitor_report_context_exposes_observed_sources_and_match_export
                 status="success",
                 warning_count=0,
                 source_collector="x_web",
-            ),
-            ObservedSourceSnapshot(
-                container_source_id="search-query:1",
-                container_source_name="subject_handle",
-                container_source_type="search_query",
-                discovery_kind="search",
-                platform="x",
-                status="unsupported",
-                warning_count=1,
-                source_collector="person_monitor",
             ),
         ],
         match_hits=[

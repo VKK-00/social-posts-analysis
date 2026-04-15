@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -23,6 +24,7 @@ from .range_utils import RangeFilter
 class ThreadsApiCollector(BaseCollector):
     name = "threads_api"
     PROFILE_FIELDS = "id,username,name,threads_profile_picture_url,threads_biography,is_verified"
+    SEARCH_FIELDS = "id,text,media_type,permalink,timestamp,username,has_replies,is_quote_post,is_reply"
     MEDIA_FIELDS = (
         "id,media_product_type,media_type,media_url,permalink,owner,username,text,timestamp,"
         "shortcode,thumbnail_url,children,is_quote_post,quoted_post,reposted_post,has_replies"
@@ -85,10 +87,78 @@ class ThreadsApiCollector(BaseCollector):
             posts=posts,
         )
 
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        if not include_posts and not include_comments:
+            return []
+
+        discovered: dict[str, dict[str, str | None]] = {}
+        for query in queries:
+            for item in self._iter_keyword_search_results(query=query, max_items=max_items_per_query):
+                if not self._within_range(item.get("timestamp")):
+                    continue
+                if not self._search_result_matches_kind(
+                    item,
+                    include_posts=include_posts,
+                    include_comments=include_comments,
+                ):
+                    continue
+                payload = self._surface_payload_from_search_item(item)
+                identity = payload["source_id"] or payload["source_url"] or payload["source_name"]
+                if not identity:
+                    continue
+                discovered[str(identity)] = payload
+        return list(discovered.values())
+
     def _resolve_source(self) -> dict[str, Any]:
         if self.config.source.source_id:
             return self._get_json(f"/{self.config.source.source_id}", params={"fields": self.PROFILE_FIELDS})
         return self._get_json("/profile_lookup", params={"username": self._source_reference(), "fields": self.PROFILE_FIELDS})
+
+    def _iter_keyword_search_results(self, *, query: str, max_items: int) -> list[dict[str, Any]]:
+        normalized_query = self._search_query_value(query)
+        if not normalized_query:
+            return []
+
+        params: dict[str, Any] = {
+            "q": normalized_query,
+            "search_type": "RECENT",
+            "search_mode": self._search_mode(query),
+            "fields": self.SEARCH_FIELDS,
+            "limit": min(max(1, max_items), 100),
+        }
+        since = self._search_since()
+        until = self._search_until()
+        if since is not None:
+            params["since"] = since
+        if until is not None:
+            params["until"] = until
+
+        results: list[dict[str, Any]] = []
+        next_cursor: str | None = None
+        remaining = max(1, max_items)
+        while remaining > 0:
+            current_params = {
+                **params,
+                "limit": min(remaining, 100),
+                **({"after": next_cursor} if next_cursor else {}),
+            }
+            payload = self._get_json("/keyword_search", params=current_params)
+            batch = payload.get("data") or []
+            if not batch:
+                break
+            results.extend(batch[:remaining])
+            remaining -= len(batch[:remaining])
+            next_cursor = str(((payload.get("paging") or {}).get("cursors") or {}).get("after") or "") or None
+            if not next_cursor:
+                break
+        return results
 
     def _iter_user_threads_pages(self, source_id: str) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"fields": self.MEDIA_FIELDS, "limit": min(max(10, self.settings.page_size), 100)}
@@ -102,6 +172,31 @@ class ThreadsApiCollector(BaseCollector):
             if not next_cursor:
                 break
         return pages
+
+    @staticmethod
+    def _search_result_matches_kind(
+        item: dict[str, Any],
+        *,
+        include_posts: bool,
+        include_comments: bool,
+    ) -> bool:
+        if include_posts and include_comments:
+            return True
+        is_reply = bool(item.get("is_reply"))
+        if include_posts and not is_reply:
+            return True
+        if include_comments and is_reply:
+            return True
+        return False
+
+    def _surface_payload_from_search_item(self, item: dict[str, Any]) -> dict[str, str | None]:
+        username = str(item.get("username") or "").strip().lstrip("@")
+        return {
+            "source_id": username or None,
+            "source_name": username or None,
+            "source_url": self._profile_url_from_username(username) if username else None,
+            "source_type": "account",
+        }
 
     def _collect_replies(self, *, post_snapshot: PostSnapshot, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
         media_id = self._native_media_id(post_snapshot.post_id)
@@ -195,14 +290,46 @@ class ThreadsApiCollector(BaseCollector):
         username = source_data.get("username")
         if not username:
             return None
-        return f"https://www.threads.net/@{username}"
+        return ThreadsApiCollector._profile_url_from_username(username)
 
     @staticmethod
     def _native_media_id(post_id: str) -> str:
         return post_id.split(":")[-1]
 
+    @staticmethod
+    def _profile_url_from_username(username: str) -> str:
+        return f"https://www.threads.net/@{username.lstrip('@')}"
+
     def _within_range(self, raw_value: object) -> bool:
         return self.range_filter.contains(None if raw_value is None else str(raw_value), allow_missing=False)
+
+    def _search_since(self) -> int | None:
+        return self._parse_datetime_to_timestamp(self.config.date_range.start, end_of_day=False)
+
+    def _search_until(self) -> int | None:
+        return self._parse_datetime_to_timestamp(self.config.date_range.end, end_of_day=True)
+
+    @staticmethod
+    def _search_mode(query: str) -> str:
+        return "TAG" if query.strip().startswith("#") else "KEYWORD"
+
+    @staticmethod
+    def _search_query_value(query: str) -> str:
+        return query.strip().lstrip("#")
+
+    @staticmethod
+    def _parse_datetime_to_timestamp(raw_value: str | None, *, end_of_day: bool) -> int | None:
+        if not raw_value:
+            return None
+        normalized = raw_value.strip()
+        if not normalized:
+            return None
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if end_of_day and "T" not in normalized:
+            parsed = parsed + timedelta(days=1) - timedelta(seconds=1)
+        return int(parsed.timestamp())
 
     @retry(
         retry=retry_if_exception_type(httpx.HTTPError),

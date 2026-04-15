@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import (
@@ -116,6 +116,50 @@ class TelegramWebCollector(BaseCollector):
             source=source_snapshot,
             posts=posts,
         )
+
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        from playwright.sync_api import sync_playwright
+
+        if not include_posts and not include_comments:
+            return []
+
+        discovered: dict[str, dict[str, str | None]] = {}
+        with sync_playwright() as playwright:
+            runtime = open_web_runtime(
+                playwright,
+                headless=self.settings.headless,
+                browser_channel=self.settings.browser_channel,
+                viewport={"width": 1400, "height": 2200},
+                custom_user_data_error="Telegram web collector does not support authenticated browser mode.",
+            )
+            try:
+                for query in queries:
+                    feed_url = self._resolve_search_discovery_url(query)
+                    if not feed_url:
+                        continue
+                    page = runtime.context.new_page()
+                    try:
+                        page.goto(feed_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
+                        self._scroll_feed(page)
+                        payload = self._extract_feed_payload(page)
+                    finally:
+                        page.close()
+                    surface = self._discovery_payload_from_feed_payload(payload, feed_url=feed_url)
+                    if not surface:
+                        continue
+                    identity = surface["source_id"] or surface["source_url"] or surface["source_name"]
+                    if identity:
+                        discovered[str(identity)] = surface
+            finally:
+                runtime.close()
+        return list(discovered.values())
 
     def _build_posts_from_payload(self, source_payload: dict[str, Any], raw_store: RawSnapshotStore) -> list[PostSnapshot]:
         source_id = str(source_payload.get("source_id") or self._source_reference())
@@ -346,6 +390,24 @@ class TelegramWebCollector(BaseCollector):
             wheel_y=3000,
         )
 
+    def _discovery_payload_from_feed_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        feed_url: str,
+    ) -> dict[str, str | None] | None:
+        if self._search_url_has_query(feed_url) and not (payload.get("messages") or []):
+            return None
+        source_id = str(payload.get("source_id") or "").strip()
+        if not source_id:
+            return None
+        return {
+            "source_id": source_id,
+            "source_name": (payload.get("source_name") or None),
+            "source_url": self._normalize_permalink(feed_url) or payload.get("source_url") or None,
+            "source_type": "channel",
+        }
+
     def _within_range(self, created_at: str | None) -> bool:
         return self.range_filter.contains(created_at, allow_missing=False)
 
@@ -430,6 +492,33 @@ class TelegramWebCollector(BaseCollector):
             raise CollectorUnavailableError("Telegram web collector requires source.url, source.source_name, or source.source_id.")
         reference = reference.strip().lstrip("@")
         return source_feed_url_from_name(reference)
+
+    @classmethod
+    def _resolve_search_discovery_url(cls, query: str | None) -> str | None:
+        if not query:
+            return None
+        stripped = query.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("http://") or stripped.startswith("https://"):
+            parsed = urlparse(stripped)
+            if not parsed.netloc.endswith("t.me"):
+                return None
+            parts = [part for part in parsed.path.split("/") if part]
+            if not parts:
+                return None
+            if parts[0] == "s" and len(parts) >= 2:
+                return urlunparse(parsed._replace(path=f"/s/{parts[1]}", fragment=""))
+            return urlunparse(parsed._replace(path=f"/s/{parts[-1]}", fragment=""))
+        if re.fullmatch(r"@?[A-Za-z0-9_]{3,}", stripped):
+            return source_feed_url_from_name(stripped.lstrip("@"))
+        return None
+
+    @staticmethod
+    def _search_url_has_query(url: str) -> bool:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        return bool(query.get("q"))
 
 def source_feed_url_from_name(name: str) -> str:
     return f"https://t.me/s/{name}"

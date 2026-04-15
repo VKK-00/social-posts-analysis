@@ -908,6 +908,114 @@ def test_telegram_collector_builds_nested_discussion_tree(tmp_path: Path, monkey
     assert manifest.posts[0].comments[1].reaction_breakdown_json == '{"🔥": 2}'
 
 
+def test_telegram_mtproto_search_discovery_filters_posts_and_comments(monkeypatch) -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+    fake_client = SimpleNamespace(disconnect=lambda: None)
+    external_channel = SimpleNamespace(
+        id=2001,
+        title="External Channel",
+        username="external_channel",
+        broadcast=True,
+    )
+    external_group = SimpleNamespace(
+        id=2002,
+        title="External Group",
+        username="external_group",
+        megagroup=True,
+    )
+    post_message = SimpleNamespace(
+        id=501,
+        date=datetime(2026, 4, 2, 10, 0, tzinfo=UTC),
+        message="Mention in channel post",
+        chat=external_channel,
+    )
+    comment_message = SimpleNamespace(
+        id=502,
+        date=datetime(2026, 4, 2, 10, 5, tzinfo=UTC),
+        message="Mention in group comment",
+        chat=external_group,
+        reply_to=FakeReplyTo(reply_to_msg_id=500),
+    )
+
+    monkeypatch.setattr(collector, "_open_client", lambda: fake_client)
+    monkeypatch.setattr(
+        collector,
+        "_iter_person_monitor_search_messages",
+        lambda client, *, query, max_items: [post_message, comment_message, post_message],
+    )
+
+    posts_only = collector.discover_person_monitor_sources(
+        queries=["subject_handle"],
+        include_posts=True,
+        include_comments=False,
+        max_items_per_query=25,
+    )
+    comments_only = collector.discover_person_monitor_sources(
+        queries=["subject_handle"],
+        include_posts=False,
+        include_comments=True,
+        max_items_per_query=25,
+    )
+
+    assert posts_only == [
+        {
+            "source_id": "external_channel",
+            "source_name": "External Channel",
+            "source_url": "https://t.me/external_channel",
+            "source_type": "channel",
+        }
+    ]
+    assert comments_only == [
+        {
+            "source_id": "external_group",
+            "source_name": "External Group",
+            "source_url": "https://t.me/external_group",
+            "source_type": "group",
+        }
+    ]
+
+
+def test_telegram_web_search_discovery_resolves_public_handles_and_search_urls() -> None:
+    collector = TelegramWebCollector(_telegram_web_config())
+
+    assert collector._resolve_search_discovery_url("@external_channel") == "https://t.me/s/external_channel"
+    assert collector._resolve_search_discovery_url("https://t.me/external_channel") == "https://t.me/s/external_channel"
+    assert (
+        collector._resolve_search_discovery_url("https://t.me/s/external_channel?q=subject_handle")
+        == "https://t.me/s/external_channel?q=subject_handle"
+    )
+    assert collector._resolve_search_discovery_url("subject handle mention") is None
+
+
+def test_telegram_web_search_discovery_requires_hits_for_query_urls() -> None:
+    collector = TelegramWebCollector(_telegram_web_config())
+
+    assert (
+        collector._discovery_payload_from_feed_payload(
+            {
+                "source_id": "external_channel",
+                "source_name": "External Channel",
+                "messages": [],
+            },
+            feed_url="https://t.me/s/external_channel?q=subject_handle",
+        )
+        is None
+    )
+    assert collector._discovery_payload_from_feed_payload(
+        {
+            "source_id": "external_channel",
+            "source_name": "External Channel",
+            "messages": [{"message_id": "1"}],
+        },
+        feed_url="https://t.me/s/external_channel?q=subject_handle",
+    ) == {
+        "source_id": "external_channel",
+        "source_name": "External Channel",
+        "source_url": "https://t.me/s/external_channel?q=subject_handle",
+        "source_type": "channel",
+    }
+
+
 def test_telegram_mtproto_discussion_fallback_scan_includes_nested_replies() -> None:
     collector = TelegramMtprotoCollector(_telegram_config())
     discussion_entity = FakeChat(id=2002, title="Example Discussion")
@@ -1453,6 +1561,64 @@ def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkey
     assert replies[1].depth == 1
 
 
+def test_x_web_search_surface_payloads_filter_posts_and_comments() -> None:
+    collector = XWebCollector(_x_web_config())
+
+    payload = {
+        "results": [
+            {
+                "status_id": "101",
+                "author_username": "external_a",
+                "author_name": "External A",
+                "created_at": "2026-04-08T10:00:00Z",
+                "is_reply": False,
+            },
+            {
+                "status_id": "102",
+                "author_username": "external_b",
+                "author_name": "External B",
+                "created_at": "2026-04-08T10:05:00Z",
+                "is_reply": True,
+            },
+            {
+                "status_id": "103",
+                "author_username": "external_a",
+                "author_name": "External A",
+                "created_at": "2026-04-08T10:10:00Z",
+                "is_reply": False,
+            },
+        ]
+    }
+
+    posts_only = collector._search_surface_payloads(
+        payload,
+        include_posts=True,
+        include_comments=False,
+    )
+    comments_only = collector._search_surface_payloads(
+        payload,
+        include_posts=False,
+        include_comments=True,
+    )
+
+    assert posts_only == [
+        {
+            "source_id": "external_a",
+            "source_name": "External A",
+            "source_url": "https://x.com/external_a",
+            "source_type": "account",
+        }
+    ]
+    assert comments_only == [
+        {
+            "source_id": "external_b",
+            "source_name": "External B",
+            "source_url": "https://x.com/external_b",
+            "source_type": "account",
+        }
+    ]
+
+
 def test_x_web_collector_ignores_embedded_origin_status_in_quote_detail(tmp_path: Path, monkeypatch) -> None:
     collector = XWebCollector(_x_web_config())
     raw_store = RawSnapshotStore(tmp_path / "raw")
@@ -1844,6 +2010,109 @@ def test_threads_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path) 
     assert posts[0].origin_post_id == "threads:origin:150"
     assert posts[0].comments_count == 12
     assert posts[0].views == 4500
+
+
+def test_threads_api_search_discovery_filters_posts_and_comments(monkeypatch) -> None:
+    collector = ThreadsApiCollector(_threads_api_config())
+
+    def fake_get_json(self, endpoint, params=None):  # noqa: ANN001, ANN202
+        assert endpoint == "/keyword_search"
+        return {
+            "data": [
+                {
+                    "id": "p1",
+                    "username": "post_author",
+                    "timestamp": "2026-04-08T10:00:00+00:00",
+                    "permalink": "https://www.threads.net/@post_author/post/p1",
+                    "is_reply": False,
+                },
+                {
+                    "id": "c1",
+                    "username": "reply_author",
+                    "timestamp": "2026-04-08T11:00:00+00:00",
+                    "permalink": "https://www.threads.net/@reply_author/post/c1",
+                    "is_reply": True,
+                },
+            ],
+            "paging": {},
+        }
+
+    monkeypatch.setattr(collector, "_get_json", fake_get_json.__get__(collector, ThreadsApiCollector))
+
+    post_surfaces = collector.discover_person_monitor_sources(
+        queries=["openai"],
+        include_posts=True,
+        include_comments=False,
+        max_items_per_query=20,
+    )
+    comment_surfaces = collector.discover_person_monitor_sources(
+        queries=["openai"],
+        include_posts=False,
+        include_comments=True,
+        max_items_per_query=20,
+    )
+
+    assert post_surfaces == [
+        {
+            "source_id": "post_author",
+            "source_name": "post_author",
+            "source_url": "https://www.threads.net/@post_author",
+            "source_type": "account",
+        }
+    ]
+    assert comment_surfaces == [
+        {
+            "source_id": "reply_author",
+            "source_name": "reply_author",
+            "source_url": "https://www.threads.net/@reply_author",
+            "source_type": "account",
+        }
+    ]
+
+
+def test_threads_web_search_surface_payloads_are_post_only_and_canonicalize_profiles() -> None:
+    collector = ThreadsWebCollector(_threads_web_config())
+    payload = {
+        "results": [
+            {
+                "author_username": "ExternalA",
+                "author_name": "ExternalA",
+                "created_at": "2026-04-08T10:00:00Z",
+                "text": "Result one",
+                "permalink": "https://www.threads.com/@ExternalA/post/1",
+                "is_reply": False,
+            },
+            {
+                "author_username": "externala",
+                "author_name": "ExternalA",
+                "created_at": "2026-04-08T10:10:00Z",
+                "text": "Duplicate author",
+                "permalink": "https://www.threads.com/@ExternalA/post/2",
+                "is_reply": False,
+            },
+        ]
+    }
+
+    post_surfaces = collector._search_surface_payloads(
+        payload,
+        include_posts=True,
+        include_comments=False,
+    )
+    comment_only_surfaces = collector._search_surface_payloads(
+        payload,
+        include_posts=False,
+        include_comments=True,
+    )
+
+    assert post_surfaces == [
+        {
+            "source_id": "externala",
+            "source_name": "ExternalA",
+            "source_url": "https://www.threads.net/@externala",
+            "source_type": "account",
+        }
+    ]
+    assert comment_only_surfaces == []
 
 
 def test_instagram_graph_api_collector_collects_posts_and_nested_comments(tmp_path: Path, monkeypatch) -> None:

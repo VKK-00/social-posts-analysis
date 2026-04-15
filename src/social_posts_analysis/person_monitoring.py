@@ -258,6 +258,16 @@ class PersonMonitorOrchestrator:
     def _discover_search_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
         if not self.config.source.search.enabled:
             return [], [], []
+        if self.config.source.platform == "telegram" and self.config.collector.mode == "mtproto":
+            return self._discover_telegram_mtproto_sources()
+        if self.config.source.platform == "telegram" and self.config.collector.mode == "web":
+            return self._discover_telegram_web_sources()
+        if self.config.source.platform == "threads" and self.config.collector.mode == "threads_api":
+            return self._discover_threads_api_sources()
+        if self.config.source.platform == "threads" and self.config.collector.mode == "web":
+            return self._discover_threads_web_sources()
+        if self.config.source.platform == "x" and self.config.collector.mode == "web":
+            return self._discover_x_web_sources()
         if self.config.source.platform == "x" and self.config.collector.mode == "x_api":
             return self._discover_x_api_sources()
         warnings: list[str] = []
@@ -316,6 +326,199 @@ class PersonMonitorOrchestrator:
             )
         if not discovery_sources:
             warnings.append("X API search discovery completed but found no external surfaces for the configured queries.")
+        return discovery_sources, [], warnings
+
+    def _discover_telegram_mtproto_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.telegram_mtproto import TelegramMtprotoCollector
+
+        warnings: list[str] = []
+        try:
+            collector = TelegramMtprotoCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=auto_search_queries(self.config.source),
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"Telegram MTProto search discovery is unavailable: {exc}"
+            return [], [], [warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "chat"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append(
+                "Telegram MTProto search discovery completed but found no external surfaces for the configured queries."
+            )
+        return discovery_sources, [], warnings
+
+    def _discover_telegram_web_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.telegram_web import TelegramWebCollector
+
+        warnings: list[str] = []
+        try:
+            collector = TelegramWebCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=auto_search_queries(self.config.source),
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"Telegram web search discovery is unavailable: {exc}"
+            return [], [], [warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "channel"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append(
+                "Telegram web search discovery supports explicit public t.me handles or /s/... search URLs only; "
+                "generic text queries cannot discover external surfaces."
+            )
+        return discovery_sources, [], warnings
+
+    def _discover_threads_api_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.threads_api import ThreadsApiCollector
+
+        warnings: list[str] = []
+        try:
+            collector = ThreadsApiCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=auto_search_queries(self.config.source),
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"Threads API search discovery is unavailable: {exc}"
+            return [], [], [warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "account"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append(
+                "Threads API keyword search completed but found no external surfaces. "
+                "If the app is not approved for threads_keyword_search, search coverage may be limited to the authenticated user's own posts."
+            )
+        return discovery_sources, [], warnings
+
+    def _discover_threads_web_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.threads_web import ThreadsWebCollector
+
+        warnings: list[str] = []
+        if self.config.source.search.include_comments:
+            warnings.append(
+                "Threads web search discovery currently derives external surfaces from public search result posts only; "
+                "reply/comment-only discovery is not supported."
+            )
+        try:
+            collector = ThreadsWebCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=auto_search_queries(self.config.source),
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"Threads web search discovery is unavailable: {exc}"
+            return [], [], [*warnings, warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "account"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append("Threads web search discovery completed but found no external surfaces for the configured queries.")
+        return discovery_sources, [], warnings
+
+    def _discover_x_web_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.x_web import XWebCollector
+
+        warnings: list[str] = []
+        try:
+            collector = XWebCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=auto_search_queries(self.config.source),
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"X web search discovery is unavailable: {exc}"
+            return [], [], [warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "account"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append("X web search discovery completed but found no external surfaces for the configured queries.")
         return discovery_sources, [], warnings
 
     def _collect_surface_manifest(

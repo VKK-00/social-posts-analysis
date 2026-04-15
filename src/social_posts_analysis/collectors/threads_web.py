@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote_plus
 
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import (
@@ -74,6 +75,48 @@ class ThreadsWebCollector(BaseCollector):
             source=source_snapshot,
             posts=updated_posts,
         )
+
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        from playwright.sync_api import sync_playwright
+
+        if not include_posts:
+            return []
+
+        discovered: dict[str, dict[str, str | None]] = {}
+        with sync_playwright() as playwright:
+            runtime = self._open_collection_context(playwright)
+            try:
+                for query in queries:
+                    page = runtime.context.new_page()
+                    try:
+                        page.goto(
+                            self._search_url(query),
+                            wait_until="domcontentloaded",
+                            timeout=int(self.settings.timeout_seconds * 1000),
+                        )
+                        self._scroll_timeline(page, passes=self._search_scroll_passes(max_items_per_query))
+                        payload = self._extract_search_payload(page)
+                    finally:
+                        page.close()
+                    for item in self._search_surface_payloads(
+                        payload,
+                        include_posts=include_posts,
+                        include_comments=include_comments,
+                    ):
+                        source_id = self._normalized_source_username(item.get("source_id"))
+                        if not source_id:
+                            continue
+                        discovered[source_id] = item
+            finally:
+                runtime.close()
+        return list(discovered.values())
 
     def _build_posts_from_payload(
         self,
@@ -172,6 +215,70 @@ class ThreadsWebCollector(BaseCollector):
             depth_map[snapshot.comment_id] = snapshot.depth
         return comments
 
+    def _extract_search_payload(self, page: Any) -> dict[str, Any]:
+        return page.evaluate(
+            """
+            () => {
+              const containers = Array.from(document.querySelectorAll('[data-pressable-container="true"]'));
+              const results = containers.map((node) => {
+                const authorLink = Array.from(node.querySelectorAll('a[href^="/@"]')).find((anchor) => {
+                  const href = anchor.getAttribute('href') || '';
+                  return /^\\/@[^/]+$/.test(href);
+                });
+                const postLink = Array.from(node.querySelectorAll('a[href*="/post/"]')).find((anchor) => {
+                  const href = anchor.getAttribute('href') || '';
+                  return href.includes('/post/') && !href.includes('/media');
+                });
+                if (!authorLink || !postLink) {
+                  return null;
+                }
+                const authorHref = authorLink.getAttribute('href') || '';
+                const authorUsername = authorHref.split('@')[1]?.split(/[/?#]/)[0] || '';
+                const timeNode = node.querySelector('time');
+                return {
+                  author_username: authorUsername,
+                  author_name: authorUsername,
+                  permalink: postLink.href || '',
+                  created_at: timeNode?.getAttribute('datetime') || null,
+                  text: (node.innerText || '').trim(),
+                  is_reply: false,
+                };
+              }).filter((item) => item && item.author_username && item.permalink);
+              return { results };
+            }
+            """
+        )
+
+    def _search_surface_payloads(
+        self,
+        payload: dict[str, Any],
+        *,
+        include_posts: bool,
+        include_comments: bool,
+    ) -> list[dict[str, str | None]]:
+        if not include_posts:
+            return []
+        surfaces: dict[str, dict[str, str | None]] = {}
+        for item in payload.get("results") or []:
+            if not self._within_range(item.get("created_at")):
+                continue
+            if not self._search_item_matches_kind(
+                item,
+                include_posts=include_posts,
+                include_comments=include_comments,
+            ):
+                continue
+            author_username = self._normalized_source_username(item.get("author_username"))
+            if not author_username:
+                continue
+            surfaces[author_username] = {
+                "source_id": author_username,
+                "source_name": (item.get("author_name") or author_username),
+                "source_url": profile_url_from_name(author_username),
+                "source_type": "account",
+            }
+        return list(surfaces.values())
+
     def _extract_profile_payload(self, page: Any) -> dict[str, Any]:
         return page.evaluate(
             """
@@ -259,6 +366,16 @@ class ThreadsWebCollector(BaseCollector):
             """
         )
 
+    @staticmethod
+    def _search_item_matches_kind(
+        item: dict[str, Any],
+        *,
+        include_posts: bool,
+        include_comments: bool,
+    ) -> bool:
+        del item, include_comments
+        return include_posts
+
     def _open_collection_context(self, playwright: Any) -> WebCollectorRuntime:
         return open_web_runtime(
             playwright,
@@ -278,6 +395,16 @@ class ThreadsWebCollector(BaseCollector):
             passes=passes,
             wheel_y=2600,
         )
+
+    def _search_url(self, query: str) -> str:
+        return f"https://www.threads.net/search?q={quote_plus(query)}"
+
+    def _search_scroll_passes(self, max_items_per_query: int) -> int:
+        return max(2, min(self.settings.max_scrolls, max_items_per_query // 8 + 1))
+
+    @staticmethod
+    def _normalized_source_username(value: str | None) -> str:
+        return (value or "").strip().lstrip("@").lower()
 
     def _resolve_profile_url(self) -> str:
         if self.config.source.url:

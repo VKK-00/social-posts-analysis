@@ -133,6 +133,47 @@ class TelegramMtprotoCollector(BaseCollector):
             posts=posts,
         )
 
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        if not include_posts and not include_comments:
+            return []
+
+        client = self._open_client()
+        try:
+            discovered: dict[str, dict[str, str | None]] = {}
+            for query in queries:
+                for message in self._iter_person_monitor_search_messages(
+                    client,
+                    query=query,
+                    max_items=max_items_per_query,
+                ):
+                    entity = self._message_container_entity(client, message)
+                    if entity is None:
+                        continue
+                    if not self._search_result_matches_kind(
+                        message,
+                        entity,
+                        include_posts=include_posts,
+                        include_comments=include_comments,
+                    ):
+                        continue
+                    payload = self._entity_surface_payload(entity)
+                    identity = payload["source_id"] or payload["source_url"] or payload["source_name"]
+                    if not identity:
+                        continue
+                    discovered[str(identity)] = payload
+            return list(discovered.values())
+        finally:
+            disconnect = getattr(client, "disconnect", None)
+            if callable(disconnect):
+                disconnect()
+
     def _open_client(self) -> Any:
         from telethon.sync import TelegramClient
 
@@ -145,6 +186,70 @@ class TelegramMtprotoCollector(BaseCollector):
                 "Telegram MTProto session is not authorized. Log in once with the configured session file."
             )
         return client
+
+    def _iter_person_monitor_search_messages(
+        self,
+        client: Any,
+        *,
+        query: str,
+        max_items: int,
+    ) -> list[Any]:
+        messages = list(
+            client.iter_messages(
+                None,
+                search=query,
+                limit=max(1, max_items),
+                offset_date=self._end_datetime(),
+                reverse=False,
+            )
+        )
+        return [
+            message
+            for message in messages
+            if not self._is_service_message(message) and self._within_range(self._message_datetime(message))
+        ]
+
+    def _message_container_entity(self, client: Any, message: Any) -> Any | None:
+        entity = getattr(message, "chat", None)
+        if entity is None and isinstance(message, dict):
+            entity = message.get("chat")
+        if entity is not None:
+            return entity
+        peer = getattr(message, "peer_id", None)
+        if peer is None and isinstance(message, dict):
+            peer = message.get("peer_id")
+        if peer is None:
+            return None
+        try:
+            return client.get_entity(peer)
+        except Exception:
+            return None
+
+    def _entity_surface_payload(self, entity: Any) -> dict[str, str | None]:
+        return {
+            "source_id": self._entity_reference(entity),
+            "source_name": self._entity_title(entity),
+            "source_url": self._entity_url(entity),
+            "source_type": self._entity_source_type(entity),
+        }
+
+    def _search_result_matches_kind(
+        self,
+        message: Any,
+        entity: Any,
+        *,
+        include_posts: bool,
+        include_comments: bool,
+    ) -> bool:
+        if include_posts and include_comments:
+            return True
+        source_type = self._entity_source_type(entity)
+        is_post_like = source_type == "channel"
+        if include_posts and is_post_like:
+            return True
+        if include_comments and not is_post_like:
+            return True
+        return False
 
     def _resolve_source_entity(self, client: Any) -> Any:
         reference = self._source_reference()
@@ -664,6 +769,33 @@ class TelegramMtprotoCollector(BaseCollector):
         if isinstance(entity, dict) and entity.get("username"):
             return f"https://t.me/{entity['username']}"
         return None
+
+    @classmethod
+    def _entity_source_type(cls, entity: Any) -> str:
+        if cls._entity_flag(entity, "broadcast"):
+            return "channel"
+        if cls._entity_flag(entity, "megagroup") or cls._entity_flag(entity, "gigagroup") or cls._entity_flag(entity, "forum"):
+            return "group"
+        if cls._entity_title(entity):
+            return "chat"
+        return "user"
+
+    @classmethod
+    def _entity_reference(cls, entity: Any) -> str | None:
+        username = getattr(entity, "username", None)
+        if username:
+            return str(username)
+        if isinstance(entity, dict) and entity.get("username"):
+            return str(entity["username"])
+        entity_id = cls._entity_id(entity)
+        return cls._stringify(entity_id)
+
+    @staticmethod
+    def _entity_flag(entity: Any, name: str) -> bool:
+        value = getattr(entity, name, None)
+        if value is None and isinstance(entity, dict):
+            value = entity.get(name)
+        return bool(value)
 
     @staticmethod
     def _stringify(value: Any) -> str | None:

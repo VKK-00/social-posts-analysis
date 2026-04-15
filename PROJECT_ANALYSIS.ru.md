@@ -526,13 +526,31 @@ Runtime assumptions:
 
 Исключение из этого правила уже есть:
 
+- для `telegram` при `collector.mode = "mtproto"` добавлен реальный search adapter, который умеет:
+  - выполнять global MTProto message search по `source.search.queries`
+  - строить discovery surfaces по `chat/channel`, в которых найдены сообщения
+  - различать `posts` и `comments` через тип Telegram surface: `channel` против `group/chat`
+  - исключать сам наблюдаемый профиль уже на уровне orchestrator, как и для других adapters
+
+- для `telegram` при `collector.mode = "web"` добавлен ограниченный, но реальный public-web search adapter, который умеет:
+  - принимать explicit public Telegram handles и `t.me` / `t.me/s/...?...` URLs из `source.search.queries`
+  - открывать public `t.me/s/...` surface или channel-local `?q=` search URL
+  - считать surface найденной только если `?q=` URL реально вернул сообщения
+  - резолвить external surface без fake global search по всему Telegram web
+
+- для `x` при `collector.mode = "web"` добавлен real browser search adapter, который умеет:
+  - открывать `https://x.com/search?...&f=live`
+  - собирать видимые tweet cards со search page
+  - строить discovery surfaces по авторам найденных tweet-ов
+  - разделять `posts` и `comments` через card-level признак `is_reply`
+
 - для `x` при `collector.mode = "x_api"` добавлен реальный search adapter, который умеет:
   - выполнять X search по `source.search.queries`
   - строить discovery surfaces по авторам найденных tweets
   - исключать сам наблюдаемый профиль из найденных external surfaces
   - фильтровать `posts` / `comments` через `source.search.include_posts` и `source.search.include_comments`
 
-То есть для `x_api` `source.search` больше не warning-only.
+То есть для `telegram_mtproto`, `telegram_web`, `x_api` и `x_web` `source.search` больше не warning-only.
 
 ### Какие новые normalized tables появились
 
@@ -585,6 +603,9 @@ Runtime assumptions:
 ### Новые ограничения и открытые вопросы
 
 - Search adapter infrastructure уже есть в дизайне, но default behavior сейчас warning-only. То есть `search-only` config валиден, но без platform-specific adapter-а может не найти ни одной реальной внешней поверхности.
+- Для `telegram_mtproto` этот пробел частично закрыт: search adapter уже есть, но он строит discovery surfaces по `chat/channel`, в которых найдено сообщение. Это хорошо покрывает mentions и authored activity в публично-доступных Telegram surfaces, но не гарантирует полный coverage всех закрытых или недоступных чатов.
+- Для `telegram_web` этот пробел закрыт только частично и более узко: public web умеет искать `?q=` только внутри уже заданного `t.me/s/<channel>` feed. Поэтому `telegram_web` adapter не делает global content discovery по всему Telegram, а только резолвит explicit public handles / `t.me` URLs и channel-local search URLs.
+- Для `x_web` этот пробел тоже частично закрыт: search adapter уже есть, но он зависит от public browser search surface и видимого DOM. То есть он полезен для discovery внешних аккаунтов, но не гарантирует стабильный coverage всех релевантных results без authenticated browser.
 - Для `x_api` этот пробел частично закрыт: search adapter уже есть, но пока он строит discovery surfaces только по авторам найденных tweets. Это полезно для mentions, но не гарантирует полное покрытие всех authored replies на чужих thread surfaces.
 - `person_monitor` не делает cross-platform entity resolution между разными run-ами.
 - Для платформ с ограниченным public DOM те же старые ограничения остаются:
@@ -614,5 +635,55 @@ Runtime assumptions:
   - orchestration dedupe
   - match hit preservation
   - reporting/export surfaces
+  - `telegram_mtproto` search discovery
+  - `telegram_web` search discovery
+  - `x_web` search discovery
   - `x_api` search discovery
   - dedupe одной и той же surface между `watchlist` и `search`
+- [tests/test_collectors.py](C:\Coding projects\facebook_posts_analysis\tests\test_collectors.py)
+  - `telegram_mtproto` search discovery filters `posts` vs `comments` по типу найденной surface
+  - `telegram_web` search discovery resolves explicit public handles and `/s/...?...` URLs
+  - `x_web` search discovery filters `posts` vs `comments` по card-level reply signal
+
+## Обновление: Threads search adapters для person_monitor
+
+В апреле 2026 года `person_monitor` был расширен ещё на два search path для Threads:
+
+- [src/social_posts_analysis/collectors/threads_api.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\threads_api.py)
+  - добавлен реальный search adapter поверх официального `GET /keyword_search`;
+  - adapter использует `q`, `search_type=RECENT`, `search_mode`, `since`, `until`, `limit`, `fields`;
+  - `source.search.queries` теперь могут реально открывать discovery surfaces в `threads_api`, а не только порождать warning;
+  - фильтрация `posts` против `comments` делается по полю `is_reply`;
+  - если приложение не одобрено для `threads_keyword_search`, API может вернуть только посты самого аутентифицированного пользователя, и тогда orchestrator увидит ноль внешних surfaces.
+
+- [src/social_posts_analysis/collectors/threads_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\threads_web.py)
+  - добавлен public-web search adapter через `https://www.threads.net/search?q=...`;
+  - adapter строит external surfaces по авторам видимых search result cards после Playwright-рендера;
+  - URLs нормализуются к каноническому виду `https://www.threads.net/@<username>`, чтобы совпадать с остальными Threads collectors;
+  - этот adapter сейчас честно считается `posts`-only: он умеет находить внешние аккаунты по найденным search result posts, но не гарантирует надёжное разделение replies/comments на public search surface.
+
+- [src/social_posts_analysis/person_monitoring.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\person_monitoring.py)
+  - добавлены ветки `_discover_threads_api_sources()` и `_discover_threads_web_sources()`;
+  - для `threads_web` orchestrator теперь явно пишет warning, если конфиг просит `include_comments`, потому что current public search adapter не поддерживает reply/comment-only discovery.
+
+Почему выбран именно такой путь:
+
+- Для `threads_api` выбран официальный endpoint `keyword_search`, а не reverse-engineered private surface. Это снижает риск быстро ломающегося кода и лучше согласуется с текущей архитектурой API collectors.
+- Для `threads_web` не выбран агрессивный parser с попыткой восстанавливать reply semantics из нестабильного DOM. Сейчас search page надёжно отдаёт author links и post links, но не даёт такого же явного reply signal, как `x_web` или `threads_api`. Поэтому текущий web adapter ограничен discovery по posts и явно предупреждает о своём coverage gap.
+
+Что изменилось в проверках:
+
+- [tests/test_person_monitoring.py](C:\Coding projects\facebook_posts_analysis\tests\test_person_monitoring.py)
+  - добавлены branch-level тесты для `threads_api` search discovery;
+  - добавлены branch-level тесты для `threads_web` search discovery;
+  - добавлен тест, что `threads_web` comment-only discovery не молчит, а возвращает явный warning.
+
+- [tests/test_collectors.py](C:\Coding projects\facebook_posts_analysis\tests\test_collectors.py)
+  - добавлен collector-level тест, что `threads_api` search discovery действительно разделяет `posts` и `comments` по `is_reply`;
+  - добавлен collector-level тест, что `threads_web` search discovery дедуплицирует authors и канонизирует profile URLs к `threads.net`.
+
+Новая фактическая граница поведения:
+
+- `threads_api` больше не warning-only для `source.search`;
+- `threads_web` тоже больше не warning-only для `source.search`, но только в post-level discovery режиме;
+- для `threads_web` reply/comment discovery по public search UI всё ещё остаётся известным ограничением и должно сохраняться как warning в report.
