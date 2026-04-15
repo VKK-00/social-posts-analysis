@@ -8,7 +8,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import social_posts_analysis.collectors.facebook_web_interactions as facebook_web_interactions
-from social_posts_analysis.collectors.facebook_web_content import merge_extracted_comments
+from social_posts_analysis.collectors.facebook_web_content import (
+    author_exclusion_literals_lower,
+    merge_extracted_comments,
+)
+from social_posts_analysis.collectors.facebook_web_extraction import extract_post_page
 from social_posts_analysis.collectors.instagram_graph_api import InstagramGraphApiCollector
 from social_posts_analysis.collectors.instagram_web import InstagramWebCollector
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
@@ -107,12 +111,16 @@ def test_public_web_time_parser_handles_relative_and_calendar_values() -> None:
     calendar = PublicWebCollector._parse_post_timestamp("March 15")
     localized = PublicWebCollector._parse_post_timestamp("24 березня 2026 року")
     embedded = PublicWebCollector._parse_post_timestamp("Рівно п’ять років тому, 24 березня 2026 року, сторінка опублікувала допис")
+    yesterday_ua = PublicWebCollector._parse_post_timestamp("Вчора")
+    yesterday_ru = PublicWebCollector._parse_post_timestamp("Вчера в 14:03")
 
     assert one_hour is not None
     assert one_day is not None
     assert calendar is not None
     assert localized == "2026-03-24T00:00:00+00:00"
     assert embedded == "2026-03-24T00:00:00+00:00"
+    assert yesterday_ua is not None
+    assert yesterday_ru is not None
 
 
 def test_public_web_time_parser_avoids_deprecated_yearless_strptime_path() -> None:
@@ -373,6 +381,36 @@ def test_public_web_derives_author_from_glued_comment_prefix() -> None:
     assert author == "Таня Доній"
 
 
+def test_public_web_author_exclusion_literals_cover_localized_ui_controls() -> None:
+    terms = author_exclusion_literals_lower()
+
+    assert "\u0432\u0456\u0434\u043f\u043e\u0432\u0456\u0441\u0442\u0438" in terms
+    assert "\u043f\u043e\u0434\u043e\u0431\u0430\u0454\u0442\u044c\u0441\u044f" in terms
+    assert "\u043e\u0442\u0432\u0435\u0442\u0438\u0442\u044c" in terms
+
+
+def test_public_web_extract_post_page_uses_shared_author_filters_in_script() -> None:
+    captured: dict[str, Any] = {}
+
+    class FakePage:
+        def evaluate(self, script: str, comment_limit: int) -> dict[str, Any]:
+            captured["script"] = script
+            captured["comment_limit"] = comment_limit
+            return {"comments": [], "reel_fallback_comments": []}
+
+    payload = extract_post_page(FakePage(), comment_limit=7)
+
+    assert payload == {"comments": [], "reel_fallback_comments": []}
+    assert captured["comment_limit"] == 7
+    assert "authorControlTerms" in captured["script"]
+    assert "authorTimePatterns" in captured["script"]
+    assert "looksLikeTimeHint" in captured["script"]
+    assert "extractCommentBodyText" in captured["script"]
+    assert "timestampNode" in captured["script"]
+    assert "raw_text:" in captured["script"]
+    assert "\\u0432\\u0456\\u0434\\u043f\\u043e\\u0432\\u0456\\u0441\\u0442\\u0438" in captured["script"]
+
+
 def test_public_web_builds_comment_hierarchy_from_nesting_offset(project_config) -> None:
     collector = PublicWebCollector(project_config)
 
@@ -409,6 +447,30 @@ def test_public_web_builds_comment_hierarchy_from_nesting_offset(project_config)
     assert comments[2].parent_comment_id is None
     assert comments[0].platform == "facebook"
     assert comments[0].thread_root_post_id == "post_1"
+
+
+def test_public_web_build_comment_snapshots_uses_raw_text_for_fallbacks(project_config) -> None:
+    collector = PublicWebCollector(project_config)
+
+    comments = collector._build_comment_snapshots(
+        post_id="post_2",
+        raw_path="raw.json",
+        payload_comments=[
+            {
+                "raw_text": "Марина Коваль\nВідповісти\nВчора о 14:03\nЩиро дякую",
+                "text": "Щиро дякую",
+                "author_name": None,
+                "published_hint": "",
+                "permalink": "https://facebook.com/post?comment_id=10",
+                "nesting_x": 350,
+            }
+        ],
+    )
+
+    assert len(comments) == 1
+    assert comments[0].author.name == "Марина Коваль"
+    assert comments[0].message == "Щиро дякую"
+    assert comments[0].created_at is not None
 
 
 def test_public_web_mobile_timeline_parser_extracts_posts() -> None:

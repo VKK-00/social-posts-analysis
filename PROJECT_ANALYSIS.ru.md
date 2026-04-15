@@ -350,6 +350,10 @@ Runtime assumptions:
   - adaptive fallback scan limit в `telegram_mtproto`, который теперь учитывает ожидаемый размер discussion thread, если Telegram его отдал
   - локализованный `comments_count` extraction в `public_web` по английским, украинским и русским comment-label строкам
   - более агрессивную фильтрацию локализованных UI/control lines в `public_web`, чтобы строки вроде `Відповісти`, `1 відповідь`, `Ответить`, `Ответы` не попадали в author/message эвристики как содержательные comments
+  - общий список локализованных author/control-line исключений между [facebook_web_content.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\facebook_web_content.py) и [facebook_web_extraction.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\facebook_web_extraction.py), чтобы DOM author-selection не расходился с Python cleanup
+  - дополнительный DOM timestamp-hint fallback в [facebook_web_extraction.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\facebook_web_extraction.py), чтобы `published_hint` чаще сохранялся прямо из comment block, а не только через поздний разбор текста
+  - поддержку локализованных yesterday-hints (`Вчора`, `Вчера в 14:03`) в [facebook_web_timestamps.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\facebook_web_timestamps.py), чтобы cleaner удалял их как timestamp, а не как часть message
+  - двухслойный comment-text flow в `facebook_web`: extractor теперь сохраняет `raw_text` и более чистый `text`, а normalization использует `raw_text` для author/timestamp fallback и `text` для итогового message
 - live smoke-run без токенов 13 апреля 2026 года для:
   - `facebook_web` на `https://www.facebook.com/VolodymyrBugrov/`
   - `telegram_web` на `https://t.me/s/durov`
@@ -360,6 +364,9 @@ Runtime assumptions:
 - `threads_web` остаётся нестабильным: UI может вернуть ноль постов даже для валидного публичного профиля.
 - `instagram_web` пока в основном post-level collector, а не полноценный comment collector.
 - Facebook heavy reels могут упираться в login wall или нестабильный comment surface даже в authenticated mode. Локализованный visible `comments_count` теперь чаще сохраняется, а comment snapshots стали чище на украинских и русских UI surface, но это всё равно не гарантирует полноту самих comment snapshots.
+- Даже после нового DOM timestamp fallback `facebook_web` всё ещё best-effort: если Facebook не отдаёт сам comment block или заменяет его login wall, ни `author_name`, ни `published_hint`, ни message оттуда локально не восстановить.
+- Важно: чистка и author-selection для `facebook_web` теперь используют один и тот же список локализованных control terms, поэтому если снова появится drift между JS extraction и Python cleanup, это уже будет регрессией именно в этой общей таблице исключений.
+- Важно отдельно: если в будущем у `facebook_web` снова останется только один `text` без `raw_text`, это будет регрессией качества, потому что cleaner потеряет часть сигналов для fallback-восстановления `author_name` и `published_hint`.
 - Это подтверждено live-run от 13 апреля 2026 года: `facebook_web` собрал `10` posts и только `3` comments, при этом в отчёте явно виден gap `visible=99, extracted=1` для reel `https://www.facebook.com/reel/1919764451982763`.
 - `telegram_mtproto` fallback scan теперь лучше учитывает ожидаемый размер discussion thread и устойчивее строит parent-chain, но scan всё ещё ограничен верхним лимитом и может не покрыть очень большие discussion threads.
 - `telegram_web` теперь лучше сохраняет `comments_count` из видимого discussion counter, но полнота самих comment texts всё равно зависит от наличия публичного discussion feed.

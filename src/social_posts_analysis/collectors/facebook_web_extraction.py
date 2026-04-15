@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .facebook_web_content import extract_metric_count, normalize_post_permalink
+from .facebook_web_content import (
+    author_exclusion_literals_lower,
+    author_timestamp_regexes,
+    extract_metric_count,
+    normalize_post_permalink,
+)
 from .facebook_web_timestamps import extract_numeric_media_id
 
 
@@ -137,6 +143,8 @@ def extract_reel_candidates(page: Any) -> list[dict[str, Any]]:
 
 
 def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
+    author_control_terms = json.dumps(author_exclusion_literals_lower())
+    author_time_patterns = json.dumps(list(author_timestamp_regexes()))
     script = """
     (commentLimit) => {
       const isVisible = (element) => {
@@ -153,25 +161,83 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
         );
       };
       const normalizeText = (value) => (value || '').replace(/\\u00a0/g, ' ').trim();
-      const looksLikeAuthor = (value) => {
+      const authorControlTerms = new Set(__AUTHOR_CONTROL_TERMS__);
+      const authorTimePatterns = __AUTHOR_TIME_PATTERNS__.map((pattern) => new RegExp(pattern, 'i'));
+      const looksLikeTimeHint = (value) => {
         const normalized = normalizeText(value);
         return (
           normalized &&
-          normalized.length <= 80 &&
-          !/\\b(?:comment|reply|replies|like|share)\\b/i.test(normalized) &&
-          !/\\b\\d+\\s*(?:m(?:in)?s?|h|d|w)\\b/i.test(normalized)
+          (
+            authorTimePatterns.some((pattern) => pattern.test(normalized)) ||
+            /\\b(?:yesterday)\\b/i.test(normalized) ||
+            /\\b(?:вчора|вчера)\\b/i.test(normalized)
+          )
         );
+      };
+      const isCommentControlLine = (value) => {
+        const normalized = normalizeText(value).replace(/[.;:|]+$/g, '');
+        const lowered = normalized.toLowerCase();
+        return (
+          !normalized ||
+          authorControlTerms.has(lowered) ||
+          /^\\d+\\s+repl(?:y|ies)$/i.test(normalized) ||
+          /^\\d+\\s+відповід(?:ь|і|ей)$/i.test(normalized) ||
+          /^\\d+\\s+ответ(?:а|ов|ы)?$/i.test(normalized) ||
+          /^.{1,80}\\s+replied$/i.test(normalized) ||
+          /^.{1,80}\\s+відповів(?:ла)?$/i.test(normalized) ||
+          /^.{1,80}\\s+ответил(?:а)?$/i.test(normalized) ||
+          /^[\\W_]*\\d+[\\W_]*$/.test(normalized) ||
+          looksLikeTimeHint(normalized)
+        );
+      };
+      const looksLikeAuthor = (value) => {
+        const normalized = normalizeText(value);
+        const lowered = normalized.toLowerCase();
+        return (
+          normalized &&
+          normalized.length <= 80 &&
+          !authorControlTerms.has(lowered) &&
+          !/\\b(?:comment|reply|replies|like|share)\\b/i.test(normalized) &&
+          !authorTimePatterns.some((pattern) => pattern.test(normalized))
+        );
+      };
+      const extractCommentBodyText = (value, authorName, publishedHint) => {
+        const normalizedAuthor = normalizeText(authorName || '');
+        const normalizedHint = normalizeText(publishedHint || '').toLowerCase();
+        const lines = normalizeText(value)
+          .split(/\\n+/)
+          .map((line) => normalizeText(line))
+          .filter(Boolean);
+        const cleanedLines = lines.filter((line) => {
+          if (normalizedAuthor && line === normalizedAuthor) {
+            return false;
+          }
+          if (normalizedHint && line.toLowerCase() === normalizedHint) {
+            return false;
+          }
+          return !isCommentControlLine(line);
+        });
+        return cleanedLines.join('\\n').trim();
       };
       const extractCommentFromArticle = (article) => {
         const links = Array.from(article.querySelectorAll('a[href], a[role="link"]'));
         const authorLink = links.find((link) => looksLikeAuthor(link.innerText || '')) || null;
         const commentPermalink = links.find((link) => (link.href || '').includes('comment_id=')) || null;
+        const timestampNode =
+          (commentPermalink && looksLikeTimeHint(commentPermalink.innerText || '') ? commentPermalink : null) ||
+          links.find((link) => link !== authorLink && looksLikeTimeHint(link.innerText || '')) ||
+          Array.from(article.querySelectorAll('span, a[href], a[role="link"]')).find((node) => looksLikeTimeHint(node.innerText || '')) ||
+          null;
+        const rawText = normalizeText(article.innerText || '');
+        const authorName = normalizeText(authorLink?.innerText || '') || null;
+        const publishedHint = normalizeText(timestampNode?.innerText || commentPermalink?.innerText || '');
         const rect = article.getBoundingClientRect();
         return {
-          text: normalizeText(article.innerText || ''),
-          author_name: normalizeText(authorLink?.innerText || '') || null,
+          raw_text: rawText,
+          text: extractCommentBodyText(rawText, authorName, publishedHint),
+          author_name: authorName,
           permalink: commentPermalink?.href || null,
-          published_hint: normalizeText(commentPermalink?.innerText || ''),
+          published_hint: publishedHint,
           nesting_x: Math.round(rect.x),
         };
       };
@@ -219,14 +285,25 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
             }
             const blockLinks = Array.from(block.querySelectorAll('a[href], a[role="link"]')).filter(isVisible);
             const authorLink = blockLinks.find((candidate) => looksLikeAuthor(candidate.innerText || '')) || null;
+            const timestampNode =
+              (link && looksLikeTimeHint(link.innerText || '') ? link : null) ||
+              blockLinks.find((candidate) => candidate !== authorLink && looksLikeTimeHint(candidate.innerText || '')) ||
+              Array.from(block.querySelectorAll('span, a[href], a[role="link"]'))
+                .filter(isVisible)
+                .find((candidate) => looksLikeTimeHint(candidate.innerText || '')) ||
+              null;
+            const rawText = normalizeText(block.innerText || '');
+            const authorName = normalizeText(authorLink?.innerText || '') || null;
+            const publishedHint = normalizeText(timestampNode?.innerText || link.innerText || '');
             const rect = block.getBoundingClientRect();
             return {
               dom_key: link.href || null,
               dom_parent_key: null,
-              text: normalizeText(block.innerText || ''),
-              author_name: normalizeText(authorLink?.innerText || '') || null,
+              raw_text: rawText,
+              text: extractCommentBodyText(rawText, authorName, publishedHint),
+              author_name: authorName,
               permalink: link.href || null,
-              published_hint: normalizeText(link.innerText || ''),
+              published_hint: publishedHint,
               nesting_x: Math.round(rect.x),
             };
           })
@@ -269,6 +346,8 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
       };
     }
     """
+    script = script.replace("__AUTHOR_CONTROL_TERMS__", author_control_terms)
+    script = script.replace("__AUTHOR_TIME_PATTERNS__", author_time_patterns)
     return page.evaluate(script, comment_limit)
 
 

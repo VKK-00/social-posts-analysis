@@ -50,6 +50,15 @@ def parse_timestamp_token(hint: str) -> str | None:
             return datetime.combine((now - timedelta(days=1)).date(), parsed_time, tzinfo=UTC).isoformat()
         except ValueError:
             return (now - timedelta(days=1)).isoformat()
+    if lowered in {"вчора", "вчера"}:
+        return (now - timedelta(days=1)).isoformat()
+    for prefix in ("вчора о ", "вчера в "):
+        if lowered.startswith(prefix):
+            try:
+                parsed_time = datetime.strptime(lowered.replace(prefix, ""), "%H:%M").time()
+                return datetime.combine((now - timedelta(days=1)).date(), parsed_time, tzinfo=UTC).isoformat()
+            except ValueError:
+                return (now - timedelta(days=1)).isoformat()
 
     formats = [
         ("%B %d at %I:%M %p", False),
@@ -84,6 +93,8 @@ def extract_supported_date_hint_safe(text: str) -> str:
     patterns = [
         r"\b\d+\s*(?:m(?:in)?s?|h(?:r|rs)?s?|d(?:ay|ays)?s?|w(?:eek|eeks)?s?)\b",
         r"\byesterday(?:\s+at\s+\d{1,2}:\d{2}\s*[ap]m)?\b",
+        r"\bвчора(?:\s+о\s+\d{1,2}:\d{2})?\b",
+        r"\bвчера(?:\s+в\s+\d{1,2}:\d{2})?\b",
         r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:,\s*\d{4})?(?:\s+at\s+\d{1,2}:\d{2}\s*[ap]m)?\b",
         rf"\b\d{{1,2}}\s+[A-Za-z\u0400-\u04FF]+(?:\s+\d{{4}})?{localized_suffix}\b",
     ]

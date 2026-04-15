@@ -580,6 +580,9 @@ Platform-specific limits:
 - Facebook public-web comment counters are now parsed from English, Ukrainian, and Russian surface text, and localized reply/control lines are filtered more aggressively out of extracted comment snapshots, but the DOM can still hide the actual comment list.
 - Facebook authenticated browser mode still only sees what the logged-in account can see.
 - Facebook propagation coverage is limited to shares and visible reshared surfaces the collectors can actually discover.
+- `facebook_web` now filters localized UI/control lines such as `Відповісти`, `1 відповідь`, `Ответить`, and `Ответы` both in Python comment cleanup and in the earlier DOM author-selection heuristic. It also preserves more `published_hint` values directly from visible comment blocks. This improves comment snapshot quality when Facebook actually exposes comment blocks, but it does not remove the April 13, 2026 heavy-reel login-wall limitation.
+- The Facebook timestamp parser also recognizes localized “yesterday” hints such as `Вчора` and `Вчера в 14:03`, so these lines are treated as timestamps during cleanup instead of leaking into comment body text.
+- `facebook_web` comment extraction now keeps both `raw_text` and a cleaner `text` candidate per comment block. Normalization uses `raw_text` for author/timestamp fallback and `text` for the final message body, which reduces DOM noise without throwing away recovery signals.
 - Telegram MTProto and web collection support one source channel per run, plus its linked discussion when visible.
 - Telegram web collection only works for public `t.me/s/...` feeds.
 - Telegram propagation coverage is limited to visible forwards or quoted surfaces available to the current collector.

@@ -14,6 +14,53 @@ from .facebook_web_timestamps import (
     parse_post_timestamp,
 )
 
+COMMENT_CONTROL_LITERALS = frozenset(
+    {
+        "Like",
+        "Reply",
+        "Replies",
+        "Most relevant",
+        "All comments",
+        "Newest",
+        "\u041f\u043e\u0434\u043e\u0431\u0430\u0454\u0442\u044c\u0441\u044f",
+        "\u0412\u0456\u0434\u043f\u043e\u0432\u0456\u0441\u0442\u0438",
+        "\u0412\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u0456",
+        "\u041d\u0430\u0439\u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0456\u0448\u0456",
+        "\u0423\u0441\u0456 \u043a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456",
+        "\u041d\u0430\u0439\u043d\u043e\u0432\u0456\u0448\u0456",
+        "\u041d\u0440\u0430\u0432\u0438\u0442\u0441\u044f",
+        "\u041e\u0442\u0432\u0435\u0442\u0438\u0442\u044c",
+        "\u041e\u0442\u0432\u0435\u0442\u044b",
+        "\u0412\u0441\u0435 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438",
+        "\u041d\u043e\u0432\u044b\u0435",
+    }
+)
+
+AUTHOR_EXCLUSION_LITERALS = frozenset(
+    {
+        *COMMENT_CONTROL_LITERALS,
+        "Comment",
+        "Share",
+        "View more comments",
+        "Show more comments",
+        "See more comments",
+        "\u041a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456",
+        "\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438",
+    }
+)
+
+AUTHOR_TIMESTAMP_REGEXES = (
+    r"\b\d+\s*(?:m(?:in)?s?|h|d|w)\b",
+    "\\b\\d+\\s*(?:\u0445\u0432|\u0445\u0432\\.|"
+    "\u0433\u043e\u0434|\u0433\u043e\u0434\\.|"
+    "\u0434\u043d|\u0434\u043d\\.|"
+    "\u0442\u0438\u0436|\u0442\u0438\u0436\\.)\\b",
+    "\\b\\d+\\s*(?:\u043c\u0438\u043d|\u043c\u0438\u043d\\.|"
+    "\u0447|\u0447\\.|"
+    "\u0434\u043d|\u0434\u043d\\.|"
+    "\u043d\u0435\u0434|\u043d\u0435\u0434\\.)\\b",
+)
+
 
 def build_comment_snapshots(
     *,
@@ -25,10 +72,11 @@ def build_comment_snapshots(
     comments: list[CommentSnapshot] = []
     nesting_stack: list[dict[str, Any]] = []
     for payload_comment in payload_comments:
-        raw_comment_text = payload_comment.get("text") or ""
+        raw_comment_text = payload_comment.get("raw_text") or payload_comment.get("text") or ""
+        comment_text_source = payload_comment.get("text") or raw_comment_text
         author_name = select_comment_author(payload_comment.get("author_name"), raw_comment_text)
         published_hint = payload_comment.get("published_hint") or derive_comment_published_hint(raw_comment_text)
-        comment_text = clean_comment_text(raw_comment_text, author_name or "", published_hint)
+        comment_text = clean_comment_text(comment_text_source, author_name or "", published_hint)
         if len(comment_text) < 3:
             continue
 
@@ -108,12 +156,12 @@ def _comment_candidate_key(comment: dict[str, Any]) -> str:
     permalink = normalize_permalink(str(comment.get("permalink") or ""))
     if permalink:
         return f"permalink:{permalink}"
-    normalized_text = normalize_mobile_text(str(comment.get("text") or ""))
+    normalized_text = normalize_mobile_text(str(comment.get("text") or comment.get("raw_text") or ""))
     return f"text:{normalized_text[:200]}"
 
 
 def _comment_candidate_score(comment: dict[str, Any]) -> int:
-    score = len(normalize_mobile_text(str(comment.get("text") or "")))
+    score = len(normalize_mobile_text(str(comment.get("text") or comment.get("raw_text") or "")))
     if comment.get("author_name"):
         score += 50
     if comment.get("published_hint"):
@@ -253,25 +301,7 @@ def is_comment_control_line(line: str) -> bool:
         return True
     if re.fullmatch(r"[\W_]+", normalized):
         return True
-    if normalized in {
-        "Like",
-        "Reply",
-        "Replies",
-        "Most relevant",
-        "All comments",
-        "Newest",
-        "Подобається",
-        "Відповісти",
-        "Відповіді",
-        "Найактуальніші",
-        "Усі коментарі",
-        "Найновіші",
-        "Нравится",
-        "Ответить",
-        "Ответы",
-        "Все комментарии",
-        "Новые",
-    }:
+    if normalized in COMMENT_CONTROL_LITERALS:
         return True
     if re.fullmatch(r"\d+\s+Repl(?:y|ies)", normalized, flags=re.IGNORECASE):
         return True
@@ -307,25 +337,17 @@ def is_plausible_comment_author(value: str) -> bool:
         return False
     if re.fullmatch(r"[\W_]*\d+[\W_]*", candidate):
         return False
-    if candidate in {
-        "Like",
-        "Comment",
-        "Reply",
-        "Most relevant",
-        "All comments",
-        "View more comments",
-        "Подобається",
-        "Відповісти",
-        "Відповіді",
-        "Усі коментарі",
-        "Найактуальніші",
-        "Нравится",
-        "Ответить",
-        "Ответы",
-        "Все комментарии",
-    }:
+    if candidate in AUTHOR_EXCLUSION_LITERALS:
         return False
     return True
+
+
+def author_exclusion_literals_lower() -> list[str]:
+    return sorted(term.lower() for term in AUTHOR_EXCLUSION_LITERALS)
+
+
+def author_timestamp_regexes() -> tuple[str, ...]:
+    return AUTHOR_TIMESTAMP_REGEXES
 
 
 def is_meaningful_post_text(text: str) -> bool:
