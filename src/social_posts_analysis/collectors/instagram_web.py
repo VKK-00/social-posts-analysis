@@ -51,7 +51,12 @@ class InstagramWebCollector(BaseCollector):
                 warnings.extend(self._profile_payload_warnings(payload, source_id=source_id))
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
-                    comments = self._collect_comments_for_post(context=runtime.context, post=post, raw_store=raw_store)
+                    comments = self._collect_comments_for_post(
+                        context=runtime.context,
+                        post=post,
+                        raw_store=raw_store,
+                        warnings=warnings,
+                    )
                     updated_posts.append(
                         post.model_copy(update={"comments": comments, "comments_count": max(post.comments_count, len(comments))})
                     )
@@ -141,7 +146,14 @@ class InstagramWebCollector(BaseCollector):
                 discovered[source_id] = payload
         return list(discovered.values())
 
-    def _collect_comments_for_post(self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
+    def _collect_comments_for_post(
+        self,
+        *,
+        context: Any,
+        post: PostSnapshot,
+        raw_store: RawSnapshotStore,
+        warnings: list[str] | None = None,
+    ) -> list[CommentSnapshot]:
         if not post.permalink:
             return []
         page = context.new_page()
@@ -152,6 +164,8 @@ class InstagramWebCollector(BaseCollector):
             raw_store.write_json("instagram_web_comments", slugify(post.post_id), payload)
         finally:
             page.close()
+        if warnings is not None:
+            warnings.extend(self._post_payload_warnings(payload, post=post))
         comments: list[CommentSnapshot] = []
         comment_id_map: dict[str, str] = {}
         depth_map: dict[str, int] = {}
@@ -391,7 +405,7 @@ class InstagramWebCollector(BaseCollector):
         }
 
     def _extract_post_payload(self, page: Any) -> dict[str, Any]:
-        return page.evaluate(
+        payload = page.evaluate(
             """
             () => {
               const isProfileHref = (href) => {
@@ -402,6 +416,102 @@ class InstagramWebCollector(BaseCollector):
               const isUiNoise = (value) => {
                 const text = (value || '').trim().toLowerCase();
                 return !text || ['reply', 'see translation', 'view replies', 'view reply'].includes(text);
+              };
+              const textValue = (value) => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'string') return value.trim();
+                return '';
+              };
+              const countValue = (value) => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'number') return String(value);
+                if (typeof value === 'string') return value.trim();
+                if (typeof value === 'object' && typeof value.count === 'number') return String(value.count);
+                return '';
+              };
+              const firstText = (...values) => values.map(textValue).find(Boolean) || '';
+              const timestampValue = (value) => {
+                if (!value) return null;
+                const numeric = Number(value);
+                if (!Number.isFinite(numeric)) return textValue(value) || null;
+                const milliseconds = numeric > 100000000000 ? numeric : numeric * 1000;
+                return new Date(milliseconds).toISOString();
+              };
+              const ownerUsername = (item) => firstText(
+                item?.owner?.username,
+                item?.user?.username,
+                item?.author?.username,
+                item?.from?.username
+              );
+              const ownerName = (item) => firstText(
+                item?.owner?.full_name,
+                item?.owner?.name,
+                item?.user?.full_name,
+                item?.user?.name,
+                item?.author?.full_name,
+                item?.author?.name,
+                item?.from?.name,
+                ownerUsername(item)
+              );
+              const commentText = (item) => firstText(item?.text, item?.body, item?.message, item?.comment_text);
+              const commentId = (item) => firstText(item?.id, item?.pk, item?.comment_id);
+              const explicitParentId = (item, parentId) => firstText(
+                item?.parent_comment_id,
+                item?.parent_comment?.id,
+                item?.parent?.id,
+                item?.replied_to_comment_id,
+                parentId
+              );
+              const candidateFromComment = (item, parentId) => {
+                if (!item || typeof item !== 'object') return null;
+                const text = commentText(item);
+                const id = commentId(item);
+                const username = ownerUsername(item);
+                const createdAt = timestampValue(item.created_at || item.created_time || item.taken_at);
+                if (!text || !id || !username) return null;
+                return {
+                  comment_id: id,
+                  reply_to_comment_id: explicitParentId(item, parentId),
+                  created_at: createdAt,
+                  text,
+                  raw_text: text,
+                  author_name: ownerName(item),
+                  author_username: username,
+                  like_count: countValue(item.edge_liked_by) || countValue(item.like_count) || countValue(item.likes_count),
+                };
+              };
+              const collectCommentCandidates = (root, output, parentId, seenObjects) => {
+                if (!root || typeof root !== 'object' || seenObjects.has(root)) return;
+                seenObjects.add(root);
+                const candidate = candidateFromComment(root, parentId);
+                const nextParentId = candidate ? candidate.comment_id : parentId;
+                if (candidate) {
+                  output.push(candidate);
+                }
+                if (Array.isArray(root)) {
+                  for (const item of root) collectCommentCandidates(item, output, nextParentId, seenObjects);
+                  return;
+                }
+                for (const value of Object.values(root)) {
+                  collectCommentCandidates(value, output, nextParentId, seenObjects);
+                }
+              };
+              const collectScriptComments = () => {
+                const comments = [];
+                for (const script of Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))) {
+                  const raw = (script.textContent || '').trim();
+                  if (!raw || (!raw.startsWith('{') && !raw.startsWith('['))) continue;
+                  try {
+                    const parsed = JSON.parse(raw);
+                    collectCommentCandidates(parsed, comments, '', new Set());
+                  } catch (error) {}
+                }
+                const byId = new Map();
+                for (const comment of comments) {
+                  if (!comment.comment_id || byId.has(comment.comment_id)) continue;
+                  byId.set(comment.comment_id, comment);
+                }
+                return Array.from(byId.values());
               };
               const isCommentCandidate = (node) => {
                 const rawText = (node.innerText || '').trim();
@@ -427,10 +537,40 @@ class InstagramWebCollector(BaseCollector):
                   like_count: '',
                 };
               });
-              return { comments };
+              const bodyText = (document.body?.innerText || '').trim();
+              const lowerBodyText = bodyText.toLowerCase();
+              const scriptComments = collectScriptComments();
+              return {
+                comments,
+                script_comments: scriptComments,
+                comment_extraction_sources: {
+                  dom_comments: comments.length,
+                  script_comments: scriptComments.length,
+                },
+                page_state: {
+                  title: document.title || '',
+                  url: location.href,
+                  body_text_sample: bodyText.slice(0, 500),
+                  login_wall_detected: /log in|sign up|log into instagram|create an account/.test(lowerBodyText),
+                  serialized_comment_data_detected: scriptComments.length > 0,
+                },
+              };
             }
             """
         )
+        dom_comments = payload.get("comments") or []
+        script_comments = payload.get("script_comments") or []
+        merged_comments = self._merge_comment_candidates(dom_comments, script_comments)
+        return {
+            "comments": merged_comments,
+            "script_comments": script_comments,
+            "comment_extraction_sources": {
+                "dom_comments": len(dom_comments),
+                "script_comments": len(script_comments),
+                "merged_comments": len(merged_comments),
+            },
+            "page_state": payload.get("page_state") or {},
+        }
 
     @classmethod
     def _normalize_post_payload_item(cls, item: dict[str, Any]) -> dict[str, Any]:
@@ -518,6 +658,30 @@ class InstagramWebCollector(BaseCollector):
             )
         return warnings
 
+    def _post_payload_warnings(self, payload: dict[str, Any], *, post: PostSnapshot) -> list[str]:
+        warnings: list[str] = []
+        page_state = payload.get("page_state") or {}
+        comments = payload.get("comments") or []
+        if page_state.get("login_wall_detected"):
+            if self._uses_authenticated_browser():
+                warnings.append(
+                    f"Authenticated browser mode is enabled, but Instagram still returned login/signup UI for detail page {post.post_id}. "
+                    "The selected browser profile may not be logged in to Instagram."
+                )
+            else:
+                warnings.append(
+                    f"Instagram public web returned login/signup UI for detail page {post.post_id}; enable authenticated_browser to scan comments with a logged-in browser profile."
+                )
+        if post.comments_count > 0 and not comments:
+            extraction_sources = payload.get("comment_extraction_sources") or {}
+            warnings.append(
+                f"Instagram web detail page for {post.post_id} exposed comment counter {post.comments_count}, "
+                "but no comments were visible in DOM or serialized page data; "
+                f"extraction counts: dom_comments={extraction_sources.get('dom_comments', 0)}, "
+                f"script_comments={extraction_sources.get('script_comments', 0)}."
+            )
+        return warnings
+
     @classmethod
     def _normalize_comment_payload_item(cls, item: dict[str, Any], *, index: int) -> dict[str, Any] | None:
         raw_text = clean_text(item.get("raw_text"))
@@ -540,6 +704,56 @@ class InstagramWebCollector(BaseCollector):
             "author_username": author_username,
             "like_count": clean_text(item.get("like_count")),
         }
+
+    @classmethod
+    def _merge_comment_candidates(
+        cls,
+        primary_comments: list[dict[str, Any]],
+        fallback_comments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for index, candidate in enumerate(primary_comments):
+            normalized = cls._normalize_comment_payload_item(candidate, index=index)
+            if normalized is None:
+                continue
+            comment_id = str(normalized.get("comment_id") or "").strip()
+            if not comment_id:
+                continue
+            merged[comment_id] = normalized
+            order.append(comment_id)
+        for index, candidate in enumerate(fallback_comments, start=len(primary_comments)):
+            normalized = cls._normalize_comment_payload_item(candidate, index=index)
+            if normalized is None:
+                continue
+            comment_id = str(normalized.get("comment_id") or "").strip()
+            if not comment_id:
+                continue
+            existing = merged.get(comment_id)
+            if existing is None:
+                merged[comment_id] = normalized
+                order.append(comment_id)
+                continue
+            if cls._comment_candidate_score(normalized) > cls._comment_candidate_score(existing):
+                merged[comment_id] = normalized
+        return [merged[comment_id] for comment_id in order if comment_id in merged]
+
+    @staticmethod
+    def _comment_candidate_score(item: dict[str, Any]) -> int:
+        score = 0
+        if item.get("text"):
+            score += 4
+        if item.get("raw_text"):
+            score += 3
+        if item.get("author_username"):
+            score += 2
+        if item.get("created_at"):
+            score += 2
+        if item.get("reply_to_comment_id"):
+            score += 1
+        if item.get("like_count"):
+            score += 1
+        return score
 
     @classmethod
     def _derive_comment_text(cls, raw_text: str, *, author_username: str, author_name: str) -> str:

@@ -883,3 +883,28 @@ Runtime assumptions:
 - если public или authenticated browser DOM содержит сериализованные media данные, collector может собрать posts даже без видимых `<a href="/p/...">` cards;
 - если Instagram снова возвращает пустой profile DOM, report и raw manifest теперь явно показывают, это `dom_posts=0/script_posts=0`, login wall, unavailable page или другой empty-feed сценарий;
 - normalized schema, table names, person-monitor matching rules и fuzzy matching не менялись.
+
+## Обновление: Instagram web post-detail comment JSON fallback
+
+Следующий gap был уже не в profile-feed, а в detail pages: Instagram может показать post или иметь comment counter, но не отдать comment DOM в стабильных `ul li` блоках.
+
+Что изменено в [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py):
+
+- `_extract_post_payload(...)` оставляет strict DOM comment candidates как первый источник;
+- рядом добавлен `script_comments` fallback, который читает inline/application-json scripts и рекурсивно ищет comment-like objects с `id/pk/comment_id`, `text/body/message/comment_text` и `owner/user/author/from.username`;
+- `_merge_comment_candidates(...)` объединяет DOM и JSON comments по `comment_id`, выбирая более богатый payload, если один и тот же comment найден двумя путями;
+- `reply_to_comment_id` переносится только из явных DOM/JSON полей вроде `data-parent-comment-id`, `parent_comment_id`, `parent_comment.id`, `replied_to_comment_id`; layout-based nested inference не добавлялся;
+- raw detail payload теперь содержит `comment_extraction_sources` и `page_state`, чтобы было видно `dom_comments`, `script_comments`, `merged_comments`, login wall и наличие serialized comment data;
+- `_post_payload_warnings(...)` добавляет явный warning, если post имел `comments_count > 0`, но DOM и script fallback вместе вернули `comments: []`.
+
+Почему выбран именно этот путь:
+
+- не выбран вариант расширять selector обратно до широкого `ul ul`, потому что он уже давал UI-noise и ложные comment blocks;
+- не выбран fuzzy/nested inference по визуальному layout, потому что Instagram DOM не гарантирует стабильный parent signal;
+- не выбран вариант считать empty comments ошибкой run-а: public Instagram может скрывать comments за login wall или не сериализовать их в HTML.
+
+Фактический эффект:
+
+- `person_monitor` получает больше шансов увидеть mentions/authored activity в Instagram comments, если они есть в serialized page data;
+- если comments всё равно скрыты, raw payload и manifest warnings теперь явно показывают, что именно было доступно extractor-у;
+- config schema, normalized tables и match rules не менялись.

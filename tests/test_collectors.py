@@ -2661,6 +2661,78 @@ def test_instagram_web_profile_payload_warnings_explain_empty_login_wall() -> No
     assert any("no post candidates" in warning for warning in warnings)
 
 
+def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+    captured: dict[str, str] = {}
+
+    class FakePage:
+        def evaluate(self, script: str) -> dict[str, Any]:
+            captured["script"] = script
+            return {
+                "comments": [
+                    {
+                        "comment_id": "c1",
+                        "text": "",
+                        "raw_text": "Alice\n1d\nReply",
+                        "author_username": "alice",
+                    }
+                ],
+                "script_comments": [
+                    {
+                        "comment_id": "c1",
+                        "text": "JSON comment with @subject_handle",
+                        "raw_text": "JSON comment with @subject_handle",
+                        "author_username": "Alice",
+                        "created_at": "2026-04-08T10:05:00.000Z",
+                        "like_count": "4",
+                    },
+                    {
+                        "comment_id": "c2",
+                        "reply_to_comment_id": "c1",
+                        "text": "Explicit nested reply",
+                        "raw_text": "Explicit nested reply",
+                        "author_username": "Bob",
+                    },
+                ],
+                "page_state": {"serialized_comment_data_detected": True},
+            }
+
+    payload = collector._extract_post_payload(FakePage())
+
+    assert "collectScriptComments" in captured["script"]
+    assert payload["comment_extraction_sources"] == {
+        "dom_comments": 1,
+        "script_comments": 2,
+        "merged_comments": 2,
+    }
+    assert [comment["comment_id"] for comment in payload["comments"]] == ["c1", "c2"]
+    assert payload["comments"][0]["text"] == "JSON comment with @subject_handle"
+    assert payload["comments"][0]["author_username"] == "alice"
+    assert payload["comments"][1]["reply_to_comment_id"] == "c1"
+
+
+def test_instagram_web_post_payload_warnings_explain_hidden_comments() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+    post = PostSnapshot(
+        post_id="instagram:example:abc123",
+        platform="instagram",
+        source_id="example",
+        comments_count=8,
+        source_collector="instagram_web",
+    )
+    payload = {
+        "comments": [],
+        "comment_extraction_sources": {"dom_comments": 0, "script_comments": 0, "merged_comments": 0},
+        "page_state": {"login_wall_detected": True},
+    }
+
+    warnings = collector._post_payload_warnings(payload, post=post)
+
+    assert any("login/signup UI" in warning for warning in warnings)
+    assert any("comment counter 8" in warning for warning in warnings)
+    assert any("dom_comments=0" in warning and "script_comments=0" in warning for warning in warnings)
+
+
 def test_instagram_web_post_payload_script_uses_strict_comment_candidates() -> None:
     collector = InstagramWebCollector(_instagram_web_config())
     captured: dict[str, str] = {}
@@ -2673,6 +2745,7 @@ def test_instagram_web_post_payload_script_uses_strict_comment_candidates() -> N
     collector._extract_post_payload(FakePage())
 
     assert "isCommentCandidate" in captured["script"]
+    assert "collectScriptComments" in captured["script"]
     assert "article ul li, div[role=\"dialog\"] ul li, ul li" in captured["script"]
     assert "ul ul, article ul ul li" not in captured["script"]
 
