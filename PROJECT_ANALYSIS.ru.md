@@ -908,3 +908,37 @@ Runtime assumptions:
 - `person_monitor` получает больше шансов увидеть mentions/authored activity в Instagram comments, если они есть в serialized page data;
 - если comments всё равно скрыты, raw payload и manifest warnings теперь явно показывают, что именно было доступно extractor-у;
 - config schema, normalized tables и match rules не менялись.
+
+## Live smoke: Instagram web public-only после JSON fallback
+
+После profile-feed и post-detail JSON fallback был запущен public-only smoke `20260416T110934Z` для `person_monitor + instagram_web`.
+
+Конфигурация smoke:
+
+- subject profile: `https://www.instagram.com/openai/`;
+- watchlist surface: `https://www.instagram.com/nasa/`;
+- search query: `@natgeo`;
+- authenticated browser: disabled;
+- output root: `%TEMP%\spa_instagram_web_smoke_after_comment_fallback`.
+
+Результат:
+
+- root status: `partial`;
+- observed surfaces: `2`;
+- collected posts: `0`;
+- collected comments: `0`;
+- match hits: `0`;
+- warnings: `4`;
+- exports были построены, включая `observed_sources.csv`, `match_hits.csv`, `matched_posts.csv`, `matched_comments.csv`, `source_warnings.csv`.
+
+Raw diagnostics по surfaces:
+
+- `watchlist-nasa`: `login_wall_detected=true`, `dom_posts=0`, `script_posts=0`, `merged_posts=0`, `serialized_data_detected=false`;
+- `search-natgeo`: `login_wall_detected=true`, `dom_posts=0`, `script_posts=0`, `merged_posts=0`, `serialized_data_detected=false`;
+- обе страницы отдавали только public profile shell с `Log In`, `Sign Up`, profile metadata и related accounts, но без post/detail candidates.
+
+Вывод:
+
+- последние fallback-и работают как диагностический и extraction path, но public Instagram в этом smoke не отдал данных, на которых они могли бы сработать;
+- это не regression в `person_monitor` discovery: surfaces `nasa` и `natgeo` были найдены и отражены в `observed_sources`;
+- следующий полезный шаг не selector tuning, а authenticated-browser smoke для `collector.instagram_web.authenticated_browser` с явно выбранным logged-in browser profile.
