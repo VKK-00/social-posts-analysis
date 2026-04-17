@@ -2707,6 +2707,16 @@ def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) 
                     "comment_candidates": 0,
                 },
                 "serialized_candidates": {"media": [], "comments": []},
+                "serialized_structure": {
+                    "scripts_analyzed": 0,
+                    "parse_errors": 0,
+                    "top_level_types": [],
+                    "top_level_keys": [],
+                    "key_paths": [],
+                    "marker_keys": [],
+                    "shape_samples": [],
+                    "raw_json": "must not be copied",
+                },
                 "body_sample": "Log In\nSign Up",
             }
 
@@ -2743,6 +2753,8 @@ def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) 
     assert diagnostic["page_state"]["body_text_length"] == 18
     assert diagnostic["extraction_sources"]["media_candidates"] == 0
     assert diagnostic["serialized_candidates"] == {"media": [], "comments": []}
+    assert diagnostic["serialized_structure"]["scripts_analyzed"] == 0
+    assert "raw_json" not in diagnostic["serialized_structure"]
     assert "runtime warning" in diagnostic["warnings"]
     assert any("login/signup UI" in warning for warning in diagnostic["warnings"])
 
@@ -2793,6 +2805,34 @@ def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypa
                         }
                     ],
                 },
+                "serialized_structure": {
+                    "scripts_analyzed": 1,
+                    "parse_errors": 0,
+                    "top_level_types": [{"type": "object", "count": 1}],
+                    "top_level_keys": [{"key": "require", "count": 1}],
+                    "key_paths": [
+                        {
+                            "path": "$.require[]",
+                            "count": 2,
+                            "value_types": ["array"],
+                            "sample_keys": [],
+                            "raw_value": "must not be copied",
+                        }
+                    ],
+                    "marker_keys": [{"key": "__bbox", "count": 1, "paths": ["$.require[]"]}],
+                    "shape_samples": [
+                        {
+                            "script_index": 0,
+                            "root_type": "object",
+                            "top_level_keys": ["require"],
+                            "shape": {
+                                "type": "object",
+                                "keys": ["require"],
+                                "children": {"require": {"type": "array", "length": 1}},
+                            },
+                        }
+                    ],
+                },
                 "body_sample": "Example Account visible profile",
             }
 
@@ -2827,6 +2867,15 @@ def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypa
     assert diagnostic["extraction_sources"]["comment_candidates"] == 1
     assert diagnostic["serialized_candidates"]["media"][0]["status_id"] == "ABC123"
     assert diagnostic["serialized_candidates"]["comments"][0]["comment_id"] == "c1"
+    assert diagnostic["serialized_structure"]["scripts_analyzed"] == 1
+    assert diagnostic["serialized_structure"]["top_level_keys"] == [{"key": "require", "count": 1}]
+    assert diagnostic["serialized_structure"]["key_paths"][0] == {
+        "path": "$.require[]",
+        "count": 2,
+        "value_types": ["array"],
+        "sample_keys": [],
+    }
+    assert "raw_value" not in diagnostic["serialized_structure"]["key_paths"][0]
     assert diagnostic["warnings"] == []
 
 
@@ -2855,6 +2904,22 @@ def test_instagram_web_session_diagnostic_script_counts_serialized_candidates() 
                     "media": [{"status_id": "ABC123", "permalink": "https://www.instagram.com/p/ABC123/"}],
                     "comments": [{"comment_id": "c1", "author_username": "alice"}],
                 },
+                "serialized_structure": {
+                    "scripts_analyzed": 1,
+                    "parse_errors": 0,
+                    "top_level_types": [{"type": "object", "count": 1}],
+                    "top_level_keys": [{"key": "require", "count": 1}],
+                    "key_paths": [{"path": "$.require[]", "count": 1, "value_types": ["array"], "sample_keys": []}],
+                    "marker_keys": [{"key": "__bbox", "count": 1, "paths": ["$.require[]"]}],
+                    "shape_samples": [
+                        {
+                            "script_index": 0,
+                            "root_type": "object",
+                            "top_level_keys": ["require"],
+                            "shape": {"type": "object", "keys": ["require"]},
+                        }
+                    ],
+                },
                 "body_sample": "",
             }
 
@@ -2862,9 +2927,14 @@ def test_instagram_web_session_diagnostic_script_counts_serialized_candidates() 
 
     assert "collectMediaCandidates" in captured["script"]
     assert "collectCommentCandidates" in captured["script"]
+    assert "collectSerializedStructure" in captured["script"]
+    assert "recordKeyPath" in captured["script"]
+    assert "shapeSample" in captured["script"]
     assert "serialized_candidates" in captured["script"]
+    assert "serialized_structure" in captured["script"]
     assert payload["extraction_sources"]["media_candidates"] == 1
     assert payload["serialized_candidates"]["media"][0]["status_id"] == "ABC123"
+    assert payload["serialized_structure"]["key_paths"][0]["path"] == "$.require[]"
 
 
 def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:

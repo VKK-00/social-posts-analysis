@@ -197,6 +197,7 @@ class InstagramWebCollector(BaseCollector):
             "serialized_candidates": self._normalize_serialized_candidate_samples(
                 payload.get("serialized_candidates") or {}
             ),
+            "serialized_structure": self._normalize_serialized_structure(payload.get("serialized_structure") or {}),
             "warnings": list(dict.fromkeys(warnings)),
             "body_sample": clean_text(payload.get("body_sample")),
         }
@@ -752,6 +753,138 @@ class InstagramWebCollector(BaseCollector):
                 }
                 return Array.from(byKey.values());
               };
+              const valueType = (value) => {
+                if (Array.isArray(value)) return 'array';
+                if (value === null) return 'null';
+                return typeof value;
+              };
+              const safeKey = (key) => {
+                const value = String(key || '');
+                if (/^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/.test(value)) return value;
+                return '*';
+              };
+              const countMap = (map, key, amount = 1) => {
+                map.set(key, (map.get(key) || 0) + amount);
+              };
+              const topCounts = (map, keyName, limit) => Array.from(map.entries())
+                .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+                .slice(0, limit)
+                .map(([key, count]) => ({ [keyName]: key, count }));
+              const recordKeyPath = (stats, path, value) => {
+                const current = stats.get(path) || { count: 0, valueTypes: new Set(), sampleKeys: new Set() };
+                current.count += 1;
+                current.valueTypes.add(valueType(value));
+                if (value && typeof value === 'object' && !Array.isArray(value)) {
+                  for (const key of Object.keys(value).slice(0, 12)) {
+                    const cleaned = safeKey(key);
+                    if (cleaned !== '*') current.sampleKeys.add(cleaned);
+                  }
+                }
+                stats.set(path, current);
+              };
+              const shapeSample = (value, depth = 0, seenObjects = new Set()) => {
+                const type = valueType(value);
+                if (!value || typeof value !== 'object') return { type };
+                if (seenObjects.has(value)) return { type, circular: true };
+                seenObjects.add(value);
+                if (Array.isArray(value)) {
+                  const itemTypes = Array.from(new Set(value.slice(0, 20).map(valueType)));
+                  const sample = depth < 2 && value.length ? shapeSample(value[0], depth + 1, seenObjects) : undefined;
+                  const result = { type: 'array', length: value.length, item_types: itemTypes };
+                  if (sample) result.sample = sample;
+                  return result;
+                }
+                const keys = Object.keys(value).map(safeKey).filter((key) => key !== '*').slice(0, 16);
+                const result = { type: 'object', keys };
+                if (depth < 2) {
+                  const children = {};
+                  for (const key of Object.keys(value).slice(0, 8)) {
+                    const cleaned = safeKey(key);
+                    if (cleaned === '*') continue;
+                    const child = value[key];
+                    const childType = valueType(child);
+                    children[cleaned] = Array.isArray(child)
+                      ? { type: childType, length: child.length, item_types: Array.from(new Set(child.slice(0, 10).map(valueType))) }
+                      : (child && typeof child === 'object' ? { type: childType, keys: Object.keys(child).map(safeKey).filter((item) => item !== '*').slice(0, 8) } : { type: childType });
+                  }
+                  result.children = children;
+                }
+                return result;
+              };
+              const collectSerializedStructure = (parsedScripts) => {
+                const topLevelTypes = new Map();
+                const topLevelKeys = new Map();
+                const keyPathStats = new Map();
+                const markerKeyStats = new Map();
+                const markerKeys = new Set(['__bbox', '__typename', '__is', 'typename', 'type', 'operationName', 'module', 'props', 'data']);
+                const shapeSamples = [];
+                const walk = (value, path, depth, seenObjects, budget) => {
+                  if (budget.count <= 0 || depth > 7 || !value || typeof value !== 'object' || seenObjects.has(value)) return;
+                  seenObjects.add(value);
+                  budget.count -= 1;
+                  if (Array.isArray(value)) {
+                    recordKeyPath(keyPathStats, `${path}[]`, value);
+                    for (const item of value.slice(0, 80)) {
+                      walk(item, `${path}[]`, depth + 1, seenObjects, budget);
+                    }
+                    return;
+                  }
+                  recordKeyPath(keyPathStats, path, value);
+                  for (const [rawKey, child] of Object.entries(value)) {
+                    const wildcardMapKey = /\\.(rsrcMap|gkxData|clpData|qplData|qexData|justknobxData)$/.test(path);
+                    const key = wildcardMapKey ? '*' : safeKey(rawKey);
+                    const childPath = key === '*' ? `${path}.*` : `${path}.${key}`;
+                    recordKeyPath(keyPathStats, childPath, child);
+                    if (markerKeys.has(rawKey)) {
+                      const current = markerKeyStats.get(rawKey) || { count: 0, paths: new Set() };
+                      current.count += 1;
+                      current.paths.add(path);
+                      markerKeyStats.set(rawKey, current);
+                    }
+                    walk(child, childPath, depth + 1, seenObjects, budget);
+                  }
+                };
+                parsedScripts.forEach((parsed, index) => {
+                  countMap(topLevelTypes, valueType(parsed));
+                  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    for (const key of Object.keys(parsed).slice(0, 24)) {
+                      const cleaned = safeKey(key);
+                      if (cleaned !== '*') countMap(topLevelKeys, cleaned);
+                    }
+                  }
+                  if (shapeSamples.length < 5) {
+                    shapeSamples.push({
+                      script_index: index,
+                      root_type: valueType(parsed),
+                      top_level_keys: parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                        ? Object.keys(parsed).map(safeKey).filter((key) => key !== '*').slice(0, 16)
+                        : [],
+                      shape: shapeSample(parsed),
+                    });
+                  }
+                  walk(parsed, '$', 0, new Set(), { count: 4000 });
+                });
+                const keyPaths = Array.from(keyPathStats.entries())
+                  .sort((left, right) => right[1].count - left[1].count || left[0].localeCompare(right[0]))
+                  .slice(0, 80)
+                  .map(([path, item]) => ({
+                    path,
+                    count: item.count,
+                    value_types: Array.from(item.valueTypes).sort(),
+                    sample_keys: Array.from(item.sampleKeys).sort().slice(0, 12),
+                  }));
+                const markers = Array.from(markerKeyStats.entries())
+                  .sort((left, right) => right[1].count - left[1].count || left[0].localeCompare(right[0]))
+                  .slice(0, 40)
+                  .map(([key, item]) => ({ key, count: item.count, paths: Array.from(item.paths).sort().slice(0, 12) }));
+                return {
+                  top_level_types: topCounts(topLevelTypes, 'type', 20),
+                  top_level_keys: topCounts(topLevelKeys, 'key', 40),
+                  key_paths: keyPaths,
+                  marker_keys: markers,
+                  shape_samples: shapeSamples,
+                };
+              };
               const bodyText = (document.body?.innerText || '').trim();
               const lowerBodyText = bodyText.toLowerCase();
               const jsonScripts = Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))
@@ -760,15 +893,21 @@ class InstagramWebCollector(BaseCollector):
               const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
               const mediaCandidates = [];
               const commentCandidates = [];
+              const parsedScripts = [];
+              let parseErrors = 0;
               for (const rawJson of jsonScripts) {
                 try {
                   const parsed = JSON.parse(rawJson);
+                  parsedScripts.push(parsed);
                   collectMediaCandidates(parsed, mediaCandidates, new Set());
                   collectCommentCandidates(parsed, commentCandidates, '', new Set());
-                } catch (error) {}
+                } catch (error) {
+                  parseErrors += 1;
+                }
               }
               const uniqueMediaCandidates = dedupeByKey(mediaCandidates, 'status_id');
               const uniqueCommentCandidates = dedupeByKey(commentCandidates, 'comment_id');
+              const serializedStructure = collectSerializedStructure(parsedScripts);
               return {
                 final_url: location.href,
                 page_state: {
@@ -788,6 +927,15 @@ class InstagramWebCollector(BaseCollector):
                 serialized_candidates: {
                   media: uniqueMediaCandidates.slice(0, 5),
                   comments: uniqueCommentCandidates.slice(0, 5),
+                },
+                serialized_structure: {
+                  scripts_analyzed: parsedScripts.length,
+                  parse_errors: parseErrors,
+                  top_level_types: serializedStructure.top_level_types,
+                  top_level_keys: serializedStructure.top_level_keys,
+                  key_paths: serializedStructure.key_paths,
+                  marker_keys: serializedStructure.marker_keys,
+                  shape_samples: serializedStructure.shape_samples,
                 },
                 body_sample: bodyText.slice(0, 500),
               };
@@ -977,6 +1125,128 @@ class InstagramWebCollector(BaseCollector):
                 if isinstance(item, dict)
             ],
         }
+
+    @classmethod
+    def _normalize_serialized_structure(cls, structure: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "scripts_analyzed": cls._int_value(structure.get("scripts_analyzed")),
+            "parse_errors": cls._int_value(structure.get("parse_errors")),
+            "top_level_types": cls._normalize_count_rows(structure.get("top_level_types"), key_name="type", limit=20),
+            "top_level_keys": cls._normalize_count_rows(structure.get("top_level_keys"), key_name="key", limit=40),
+            "key_paths": cls._normalize_key_path_rows(structure.get("key_paths")),
+            "marker_keys": cls._normalize_marker_key_rows(structure.get("marker_keys")),
+            "shape_samples": cls._normalize_shape_samples(structure.get("shape_samples")),
+        }
+
+    @classmethod
+    def _normalize_count_rows(cls, rows: Any, *, key_name: str, limit: int) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in rows[:limit]:
+            if not isinstance(item, dict):
+                continue
+            key_value = clean_text(item.get(key_name))
+            if not key_value:
+                continue
+            normalized.append({key_name: key_value, "count": cls._int_value(item.get("count"))})
+        return normalized
+
+    @classmethod
+    def _normalize_key_path_rows(cls, rows: Any) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in rows[:80]:
+            if not isinstance(item, dict):
+                continue
+            path = clean_text(item.get("path"))
+            if not path:
+                continue
+            normalized.append(
+                {
+                    "path": path[:240],
+                    "count": cls._int_value(item.get("count")),
+                    "value_types": cls._string_list(item.get("value_types"), limit=12),
+                    "sample_keys": cls._string_list(item.get("sample_keys"), limit=12),
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _normalize_marker_key_rows(cls, rows: Any) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in rows[:40]:
+            if not isinstance(item, dict):
+                continue
+            key = clean_text(item.get("key"))
+            if not key:
+                continue
+            normalized.append(
+                {
+                    "key": key[:80],
+                    "count": cls._int_value(item.get("count")),
+                    "paths": cls._string_list(item.get("paths"), limit=12, max_length=240),
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _normalize_shape_samples(cls, rows: Any) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in rows[:5]:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(
+                {
+                    "script_index": cls._int_value(item.get("script_index")),
+                    "root_type": clean_text(item.get("root_type"))[:40],
+                    "top_level_keys": cls._string_list(item.get("top_level_keys"), limit=16, max_length=80),
+                    "shape": cls._redact_shape_sample(item.get("shape"), depth=0),
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _redact_shape_sample(cls, value: Any, *, depth: int) -> dict[str, Any]:
+        if not isinstance(value, dict) or depth > 3:
+            return {"type": "unknown"}
+        result: dict[str, Any] = {"type": clean_text(value.get("type"))[:40] or "unknown"}
+        if "length" in value:
+            result["length"] = cls._int_value(value.get("length"))
+        if "circular" in value:
+            result["circular"] = bool(value.get("circular"))
+        if "item_types" in value:
+            result["item_types"] = cls._string_list(value.get("item_types"), limit=12, max_length=40)
+        if "keys" in value:
+            result["keys"] = cls._string_list(value.get("keys"), limit=16, max_length=80)
+        child_sample = value.get("sample")
+        if isinstance(child_sample, dict):
+            result["sample"] = cls._redact_shape_sample(child_sample, depth=depth + 1)
+        raw_children = value.get("children")
+        if isinstance(raw_children, dict) and depth < 2:
+            children: dict[str, Any] = {}
+            for key, child in list(raw_children.items())[:8]:
+                child_key = clean_text(key)[:80]
+                if child_key and isinstance(child, dict):
+                    children[child_key] = cls._redact_shape_sample(child, depth=depth + 1)
+            result["children"] = children
+        return result
+
+    @staticmethod
+    def _string_list(value: Any, *, limit: int, max_length: int = 80) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        output: list[str] = []
+        for item in value[:limit]:
+            text = clean_text(item)[:max_length]
+            if text:
+                output.append(text)
+        return output
 
     @staticmethod
     def _int_value(value: Any) -> int:

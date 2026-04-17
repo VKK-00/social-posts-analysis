@@ -64,6 +64,15 @@ paths:
                     "comment_candidates": 0,
                 },
                 "serialized_candidates": {"media": [], "comments": []},
+                "serialized_structure": {
+                    "scripts_analyzed": 0,
+                    "parse_errors": 0,
+                    "top_level_types": [],
+                    "top_level_keys": [],
+                    "key_paths": [],
+                    "marker_keys": [],
+                    "shape_samples": [],
+                },
                 "warnings": ["Instagram returned login/signup UI."],
                 "body_sample": "Log In Sign Up",
             }
@@ -90,4 +99,5 @@ paths:
     assert payload["target_url"] == "https://www.instagram.com/nasa/"
     assert payload["page_state"]["login_wall_detected"] is True
     assert payload["serialized_candidates"] == {"media": [], "comments": []}
+    assert payload["serialized_structure"]["scripts_analyzed"] == 0
     assert "Instagram web diagnostic written" in result.output

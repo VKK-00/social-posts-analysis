@@ -1095,3 +1095,73 @@ Raw diagnostics:
 - browser session больше не выглядит как login wall;
 - Instagram отдаёт serialized JSON blocks, но текущий recognizer не находит в них стандартные media/comment-like объекты;
 - следующий полезный batch должен не расширять normalized extraction сразу, а добавить безопасную structural JSON map для scripts: top-level keys, nested key paths, object type markers и небольшие redacted shape samples без полного сохранения приватного payload.
+
+## Обновление: Instagram web structural JSON map
+
+Следующий batch добавил безопасную structural map в `doctor-instagram-web`.
+
+Что изменено:
+
+- [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py) теперь строит `serialized_structure` внутри `InstagramWebCollector.diagnose_browser_session(...)`;
+- scanner работает только в diagnostic path и не меняет `collect(...)`, normalized tables или `person_monitor`;
+- `serialized_structure` содержит:
+  - `scripts_analyzed`;
+  - `parse_errors`;
+  - `top_level_types`;
+  - `top_level_keys`;
+  - `key_paths`;
+  - `marker_keys`;
+  - `shape_samples`.
+
+Privacy/безопасность:
+
+- полный raw JSON не сохраняется;
+- строковые значения payload не сохраняются;
+- сохраняются только имена ключей, типы значений, counts, длины массивов и ограниченные shape samples;
+- подозрительные object keys, которые не похожи на имена полей, схлопываются в `*`;
+- Python-side normalizer отбрасывает неожиданные поля вроде `raw_json` или `raw_value`, даже если browser script их вернёт.
+
+Зачем это нужно:
+
+- предыдущий smoke показал `json_script_blocks=39`, но `media_candidates=0` и `comment_candidates=0`;
+- теперь можно увидеть форму этих JSON scripts без ручного dump приватного payload;
+- следующий extractor batch должен опираться на `serialized_structure`: если там видны стабильные Instagram media/comment paths, только тогда расширять `_extract_profile_payload(...)` или `_extract_post_payload(...)`.
+
+## Live smoke: Instagram web structural JSON map
+
+После добавления `serialized_structure` был выполнен live smoke:
+
+- config: `%TEMP%\spa_instagram_web_auth_doctor_structure_redacted.yaml`;
+- target URL: `https://www.instagram.com/nasa/`;
+- run id: `doctor-live-structure-redacted-1`;
+- browser profile: Chrome `Default`;
+- `authenticated_browser.enabled=true`;
+- `copy_profile=true`.
+
+Результат:
+
+- `status=content_visible`;
+- `login_wall_detected=false`;
+- `serialized_data_detected=true`;
+- `body_text_length=0`;
+- `json_script_blocks=39`;
+- `media_candidates=0`;
+- `comment_candidates=0`;
+- `scripts_analyzed=39`;
+- `parse_errors=0`;
+- `top_level_types`: только `object`, count `39`;
+- самый частый top-level key: `require`, count `37`;
+- самые частые nested paths:
+  - `$.require[][][].gkxData.*`, count `1090`;
+  - `$.require[][][].rsrcMap.*`, count `970`;
+  - `$.require[][][].clpData.*`, count `646`;
+- marker keys:
+  - `type`, count `485`, path `$.require[][][].rsrcMap.*`;
+  - `__bbox`, count `15`, path `$.require[][][]`.
+
+Вывод:
+
+- authenticated session доступна и login wall не блокирует diagnostic path;
+- на profile page `nasa` текущий Instagram DOM/script snapshot больше похож на boot/resource/config payload, а не на media feed payload;
+- следующий extractor batch не должен вслепую добавлять JSON extraction из этих scripts;
+- если нужно продолжать Instagram, следующий точный шаг: прогнать `doctor-instagram-web` на detail URL `/p/.../` или `/reel/.../`, где вероятнее появятся media/comment-specific JSON paths.

@@ -448,6 +448,8 @@ If the diagnostic returns `status: "login_wall"`, the selected profile launched 
 
 If the diagnostic returns `status: "content_visible"` with `body_text_length: 0`, check `extraction_sources.media_candidates`, `extraction_sources.comment_candidates`, and `serialized_candidates`. Those fields show whether Instagram exposed usable post/comment-like objects in serialized JSON even when the visible DOM is empty.
 
+If `json_script_blocks` is greater than zero but candidate counts are `0`, check `serialized_structure`. It stores a redacted structure map: top-level JSON types/keys, frequent nested key paths, marker keys like `__typename` or `__bbox`, and small shape samples. It intentionally does not store full raw JSON values.
+
 ## Usage
 
 Full pipeline:
