@@ -446,6 +446,8 @@ Use `SOCIAL_BROWSER_USER_DATA_DIR` for the browser user-data root, not the neste
 
 If the diagnostic returns `status: "login_wall"`, the selected profile launched but Instagram still showed login/signup UI. Try a profile that is visibly logged in to Instagram, or temporarily set `instagram_web.headless: false` to validate the session in a visible browser window. Keep `copy_profile: true` when using a normal daily browser profile: it scans a temporary snapshot instead of attaching directly to the profile that Chrome may already have open.
 
+If the diagnostic returns `status: "content_visible"` with `body_text_length: 0`, check `extraction_sources.media_candidates`, `extraction_sources.comment_candidates`, and `serialized_candidates`. Those fields show whether Instagram exposed usable post/comment-like objects in serialized JSON even when the visible DOM is empty.
+
 ## Usage
 
 Full pipeline:

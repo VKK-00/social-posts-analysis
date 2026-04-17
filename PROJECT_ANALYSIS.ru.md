@@ -1040,3 +1040,58 @@ Raw diagnostics:
 - текущий Chrome `Default` для preflight уже не выглядит как login wall;
 - visible DOM всё ещё пустой, поэтому обычные DOM selectors не являются главным следующим рычагом;
 - следующий Instagram batch, если продолжать эту поверхность, должен смотреть структуру serialized JSON на profile page и проверять, есть ли там media/comment payloads, которые можно безопасно извлечь без private API.
+
+## Обновление: Instagram web serialized JSON diagnostics
+
+Следующий маленький batch усилил не extraction, а диагностику `doctor-instagram-web`.
+
+Что изменено:
+
+- [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py) теперь в `_extract_session_diagnostic_payload(...)` рекурсивно смотрит JSON scripts;
+- diagnostic output считает `media_candidates` и `comment_candidates`;
+- diagnostic output добавляет `serialized_candidates.media` и `serialized_candidates.comments`;
+- samples ограничены первыми пятью элементами и содержат только короткие поля: id/permalink/author/наличие текста/text sample/counts.
+
+Почему это сделано отдельно:
+
+- это не меняет normalized data model;
+- это не меняет `person_monitor`;
+- это не делает private Instagram API calls;
+- это даёт быстрый способ понять, стоит ли следующий batch делать как JSON extraction, или страница всё равно не отдаёт полезные serialized payloads.
+
+Как читать результат:
+
+- если `status=login_wall`, сначала надо чинить browser profile/session;
+- если `status=content_visible`, `body_text_length=0`, но `media_candidates > 0`, следующий extraction batch должен брать profile posts из serialized JSON;
+- если `comment_candidates > 0`, можно отдельно проверять detail/comment JSON path;
+- если JSON blocks есть, но candidates равны `0`, нужно смотреть конкретную структуру scripts перед расширением extractor-а.
+
+## Live smoke: Instagram web serialized JSON diagnostics
+
+После добавления `media_candidates` и `comment_candidates` был выполнен повторный smoke:
+
+- config: `%TEMP%\spa_instagram_web_auth_doctor_serialized.yaml`;
+- target URL: `https://www.instagram.com/nasa/`;
+- run id: `doctor-live-serialized-1`;
+- browser profile: Chrome `Default`;
+- `authenticated_browser.enabled=true`;
+- `copy_profile=true`;
+- output JSON: `%TEMP%\spa_instagram_web_auth_doctor_serialized\raw\_diagnostics\doctor-live-serialized-1\instagram_web_session.json`.
+
+Результат:
+
+- `status=content_visible`;
+- `login_wall_detected=false`;
+- `serialized_data_detected=true`;
+- `body_text_length=0`;
+- `post_links=0`;
+- `json_script_blocks=39`;
+- `media_candidates=0`;
+- `comment_candidates=0`;
+- samples: `0` media, `0` comments.
+
+Вывод:
+
+- browser session больше не выглядит как login wall;
+- Instagram отдаёт serialized JSON blocks, но текущий recognizer не находит в них стандартные media/comment-like объекты;
+- следующий полезный batch должен не расширять normalized extraction сразу, а добавить безопасную structural JSON map для scripts: top-level keys, nested key paths, object type markers и небольшие redacted shape samples без полного сохранения приватного payload.

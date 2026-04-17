@@ -191,7 +191,12 @@ class InstagramWebCollector(BaseCollector):
             "extraction_sources": {
                 "post_links": self._int_value(extraction_sources.get("post_links")),
                 "json_script_blocks": self._int_value(extraction_sources.get("json_script_blocks")),
+                "media_candidates": self._int_value(extraction_sources.get("media_candidates")),
+                "comment_candidates": self._int_value(extraction_sources.get("comment_candidates")),
             },
+            "serialized_candidates": self._normalize_serialized_candidate_samples(
+                payload.get("serialized_candidates") or {}
+            ),
             "warnings": list(dict.fromkeys(warnings)),
             "body_sample": clean_text(payload.get("body_sample")),
         }
@@ -626,12 +631,144 @@ class InstagramWebCollector(BaseCollector):
         return page.evaluate(
             """
             () => {
+              const textValue = (value) => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'string') return value.trim();
+                return '';
+              };
+              const countValue = (value) => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'number') return String(value);
+                if (typeof value === 'string') return value.trim();
+                if (typeof value === 'object' && typeof value.count === 'number') return String(value.count);
+                return '';
+              };
+              const firstText = (...values) => values.map(textValue).find(Boolean) || '';
+              const captionText = (item) => {
+                const edgeCaption = item?.edge_media_to_caption?.edges?.[0]?.node?.text;
+                const caption = item?.caption;
+                return firstText(
+                  edgeCaption,
+                  caption?.text,
+                  caption?.caption,
+                  caption,
+                  item?.accessibility_caption,
+                  item?.title,
+                  item?.text
+                );
+              };
+              const ownerUsername = (item) => firstText(
+                item?.owner?.username,
+                item?.user?.username,
+                item?.profile_grid_owner?.username,
+                item?.author?.username,
+                item?.from?.username
+              );
+              const commentText = (item) => firstText(item?.text, item?.body, item?.message, item?.comment_text);
+              const commentId = (item) => firstText(item?.id, item?.pk, item?.comment_id);
+              const explicitParentId = (item, parentId) => firstText(
+                item?.parent_comment_id,
+                item?.parent_comment?.id,
+                item?.parent?.id,
+                item?.replied_to_comment_id,
+                parentId
+              );
+              const mediaCandidateFromItem = (item) => {
+                if (!item || typeof item !== 'object') return null;
+                const shortcode = firstText(item.shortcode, item.code);
+                if (!shortcode || !/^[A-Za-z0-9_-]{3,}$/.test(shortcode)) return null;
+                const hasMediaSignal = Boolean(
+                  item.display_url ||
+                  item.thumbnail_src ||
+                  item.thumbnail_url ||
+                  item.edge_media_to_caption ||
+                  item.caption ||
+                  item.taken_at_timestamp ||
+                  item.owner ||
+                  item.is_video !== undefined ||
+                  item.like_count !== undefined ||
+                  item.comment_count !== undefined
+                );
+                if (!hasMediaSignal) return null;
+                const text = captionText(item);
+                const permalinkKind = item.is_video || String(item.product_type || '').toLowerCase().includes('clips') ? 'reel' : 'p';
+                return {
+                  status_id: shortcode,
+                  permalink: `https://www.instagram.com/${permalinkKind}/${shortcode}/`,
+                  author_username: ownerUsername(item),
+                  has_text: Boolean(text),
+                  text_sample: text.slice(0, 160),
+                  comment_count: countValue(item.edge_media_to_comment) || countValue(item.comment_count),
+                  like_count: countValue(item.edge_liked_by) || countValue(item.edge_media_preview_like) || countValue(item.like_count),
+                };
+              };
+              const commentCandidateFromItem = (item, parentId) => {
+                if (!item || typeof item !== 'object') return null;
+                const text = commentText(item);
+                const id = commentId(item);
+                const username = ownerUsername(item);
+                if (!text || !id || !username) return null;
+                return {
+                  comment_id: id,
+                  author_username: username,
+                  reply_to_comment_id: explicitParentId(item, parentId),
+                  has_text: Boolean(text),
+                  text_sample: text.slice(0, 160),
+                };
+              };
+              const collectMediaCandidates = (root, output, seenObjects) => {
+                if (!root || typeof root !== 'object' || seenObjects.has(root)) return;
+                seenObjects.add(root);
+                const candidate = mediaCandidateFromItem(root);
+                if (candidate) output.push(candidate);
+                if (Array.isArray(root)) {
+                  for (const item of root) collectMediaCandidates(item, output, seenObjects);
+                  return;
+                }
+                for (const value of Object.values(root)) {
+                  collectMediaCandidates(value, output, seenObjects);
+                }
+              };
+              const collectCommentCandidates = (root, output, parentId, seenObjects) => {
+                if (!root || typeof root !== 'object' || seenObjects.has(root)) return;
+                seenObjects.add(root);
+                const candidate = commentCandidateFromItem(root, parentId);
+                const nextParentId = candidate ? candidate.comment_id : parentId;
+                if (candidate) output.push(candidate);
+                if (Array.isArray(root)) {
+                  for (const item of root) collectCommentCandidates(item, output, nextParentId, seenObjects);
+                  return;
+                }
+                for (const value of Object.values(root)) {
+                  collectCommentCandidates(value, output, nextParentId, seenObjects);
+                }
+              };
+              const dedupeByKey = (items, keyName) => {
+                const byKey = new Map();
+                for (const item of items) {
+                  const key = item?.[keyName];
+                  if (!key || byKey.has(key)) continue;
+                  byKey.set(key, item);
+                }
+                return Array.from(byKey.values());
+              };
               const bodyText = (document.body?.innerText || '').trim();
               const lowerBodyText = bodyText.toLowerCase();
               const jsonScripts = Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))
                 .map((script) => (script.textContent || '').trim())
                 .filter((text) => text && (text.startsWith('{') || text.startsWith('[')));
               const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
+              const mediaCandidates = [];
+              const commentCandidates = [];
+              for (const rawJson of jsonScripts) {
+                try {
+                  const parsed = JSON.parse(rawJson);
+                  collectMediaCandidates(parsed, mediaCandidates, new Set());
+                  collectCommentCandidates(parsed, commentCandidates, '', new Set());
+                } catch (error) {}
+              }
+              const uniqueMediaCandidates = dedupeByKey(mediaCandidates, 'status_id');
+              const uniqueCommentCandidates = dedupeByKey(commentCandidates, 'comment_id');
               return {
                 final_url: location.href,
                 page_state: {
@@ -645,6 +782,12 @@ class InstagramWebCollector(BaseCollector):
                 extraction_sources: {
                   post_links: postLinks.length,
                   json_script_blocks: jsonScripts.length,
+                  media_candidates: uniqueMediaCandidates.length,
+                  comment_candidates: uniqueCommentCandidates.length,
+                },
+                serialized_candidates: {
+                  media: uniqueMediaCandidates.slice(0, 5),
+                  comments: uniqueCommentCandidates.slice(0, 5),
                 },
                 body_sample: bodyText.slice(0, 500),
               };
@@ -800,6 +943,39 @@ class InstagramWebCollector(BaseCollector):
             "profile_unavailable_detected": bool(page_state.get("profile_unavailable_detected")),
             "serialized_data_detected": bool(page_state.get("serialized_data_detected")),
             "body_text_length": cls._int_value(page_state.get("body_text_length")),
+        }
+
+    @classmethod
+    def _normalize_serialized_candidate_samples(cls, candidates: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        raw_media = candidates.get("media") if isinstance(candidates, dict) else []
+        raw_comments = candidates.get("comments") if isinstance(candidates, dict) else []
+        media = raw_media if isinstance(raw_media, list) else []
+        comments = raw_comments if isinstance(raw_comments, list) else []
+        return {
+            "media": [
+                {
+                    "status_id": clean_text(item.get("status_id")),
+                    "permalink": canonical_instagram_permalink(item.get("permalink")),
+                    "author_username": instagram_username_from_reference(item.get("author_username")) or "",
+                    "has_text": bool(item.get("has_text")),
+                    "text_sample": clean_text(item.get("text_sample"))[:160],
+                    "comment_count": clean_text(item.get("comment_count")),
+                    "like_count": clean_text(item.get("like_count")),
+                }
+                for item in media[:5]
+                if isinstance(item, dict)
+            ],
+            "comments": [
+                {
+                    "comment_id": clean_text(item.get("comment_id")),
+                    "author_username": instagram_username_from_reference(item.get("author_username")) or "",
+                    "reply_to_comment_id": clean_text(item.get("reply_to_comment_id")),
+                    "has_text": bool(item.get("has_text")),
+                    "text_sample": clean_text(item.get("text_sample"))[:160],
+                }
+                for item in comments[:5]
+                if isinstance(item, dict)
+            ],
         }
 
     @staticmethod

@@ -2700,7 +2700,13 @@ def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) 
                     "serialized_data_detected": False,
                     "body_text_length": 18,
                 },
-                "extraction_sources": {"post_links": 0, "json_script_blocks": 0},
+                "extraction_sources": {
+                    "post_links": 0,
+                    "json_script_blocks": 0,
+                    "media_candidates": 0,
+                    "comment_candidates": 0,
+                },
+                "serialized_candidates": {"media": [], "comments": []},
                 "body_sample": "Log In\nSign Up",
             }
 
@@ -2735,6 +2741,8 @@ def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) 
     assert diagnostic["target_url"] == "https://www.instagram.com/nasa/"
     assert diagnostic["final_url"] == "https://www.instagram.com/nasa/"
     assert diagnostic["page_state"]["body_text_length"] == 18
+    assert diagnostic["extraction_sources"]["media_candidates"] == 0
+    assert diagnostic["serialized_candidates"] == {"media": [], "comments": []}
     assert "runtime warning" in diagnostic["warnings"]
     assert any("login/signup UI" in warning for warning in diagnostic["warnings"])
 
@@ -2757,7 +2765,34 @@ def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypa
                     "serialized_data_detected": True,
                     "body_text_length": 32,
                 },
-                "extraction_sources": {"post_links": 1, "json_script_blocks": 1},
+                "extraction_sources": {
+                    "post_links": 1,
+                    "json_script_blocks": 1,
+                    "media_candidates": 2,
+                    "comment_candidates": 1,
+                },
+                "serialized_candidates": {
+                    "media": [
+                        {
+                            "status_id": "ABC123",
+                            "permalink": "https://www.instagram.com/p/ABC123/",
+                            "author_username": "example_account",
+                            "has_text": True,
+                            "text_sample": "Caption with @subject",
+                            "comment_count": "3",
+                            "like_count": "9",
+                        }
+                    ],
+                    "comments": [
+                        {
+                            "comment_id": "c1",
+                            "author_username": "alice",
+                            "reply_to_comment_id": "",
+                            "has_text": True,
+                            "text_sample": "Serialized comment",
+                        }
+                    ],
+                },
                 "body_sample": "Example Account visible profile",
             }
 
@@ -2788,7 +2823,48 @@ def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypa
     assert diagnostic["target_url"] == "https://www.instagram.com/example_account/"
     assert diagnostic["page_state"]["serialized_data_detected"] is True
     assert diagnostic["extraction_sources"]["post_links"] == 1
+    assert diagnostic["extraction_sources"]["media_candidates"] == 2
+    assert diagnostic["extraction_sources"]["comment_candidates"] == 1
+    assert diagnostic["serialized_candidates"]["media"][0]["status_id"] == "ABC123"
+    assert diagnostic["serialized_candidates"]["comments"][0]["comment_id"] == "c1"
     assert diagnostic["warnings"] == []
+
+
+def test_instagram_web_session_diagnostic_script_counts_serialized_candidates() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+    captured: dict[str, str] = {}
+
+    class FakePage:
+        def evaluate(self, script: str) -> dict[str, Any]:
+            captured["script"] = script
+            return {
+                "final_url": "https://www.instagram.com/nasa/",
+                "page_state": {
+                    "login_wall_detected": False,
+                    "profile_unavailable_detected": False,
+                    "serialized_data_detected": True,
+                    "body_text_length": 0,
+                },
+                "extraction_sources": {
+                    "post_links": 0,
+                    "json_script_blocks": 1,
+                    "media_candidates": 1,
+                    "comment_candidates": 1,
+                },
+                "serialized_candidates": {
+                    "media": [{"status_id": "ABC123", "permalink": "https://www.instagram.com/p/ABC123/"}],
+                    "comments": [{"comment_id": "c1", "author_username": "alice"}],
+                },
+                "body_sample": "",
+            }
+
+    payload = collector._extract_session_diagnostic_payload(FakePage())
+
+    assert "collectMediaCandidates" in captured["script"]
+    assert "collectCommentCandidates" in captured["script"]
+    assert "serialized_candidates" in captured["script"]
+    assert payload["extraction_sources"]["media_candidates"] == 1
+    assert payload["serialized_candidates"]["media"][0]["status_id"] == "ABC123"
 
 
 def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:
