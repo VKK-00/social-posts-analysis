@@ -978,3 +978,65 @@ Raw diagnostics:
 - authenticated runtime теперь технически запускается и не зависает на полном копировании профиля;
 - текущий Chrome `Default` не снимает Instagram login wall для `nasa`;
 - следующий шаг должен быть не selector tuning, а проверка реально logged-in Instagram browser profile: другой Chrome/Edge profile, `headless=false`, либо ручная подготовка отдельного profile directory, где Instagram точно открыт как logged-in session.
+
+## Обновление: Instagram web auth preflight
+
+После smoke с Chrome `Default` стало ясно, что дальнейшее изменение selectors в `instagram_web` не даст пользы, пока неизвестно, видит ли collector реально авторизованную Instagram-сессию.
+
+Что добавлено:
+
+- [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py) получил метод `InstagramWebCollector.diagnose_browser_session(...)`;
+- метод использует тот же `_open_collection_context(...)`, что и обычный collection path, поэтому проверяет тот же `authenticated_browser`, `copy_profile`, `profile_directory`, `headless` и launch fallback;
+- [src/social_posts_analysis/cli.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\cli.py) получил команду `doctor-instagram-web`;
+- команда пишет JSON в `data/raw/_diagnostics/<run_id>/instagram_web_session.json`.
+
+Что содержит diagnostic JSON:
+
+- `collector`, `target_url`, `final_url`;
+- `authenticated_browser_enabled`, `browser`, `profile_directory`, `copy_profile`;
+- `status`: `content_visible`, `login_wall`, `profile_unavailable`, `empty_dom` или `runtime_error`;
+- `page_state`: `login_wall_detected`, `profile_unavailable_detected`, `serialized_data_detected`, `body_text_length`;
+- `extraction_sources`: `post_links`, `json_script_blocks`;
+- `warnings` и `body_sample`.
+
+Почему выбран такой путь:
+
+- не меняется public config schema;
+- не меняются normalized tables, `person_monitor`, `match_hits` и `observed_sources`;
+- login wall теперь считается диагностическим результатом, а не crash;
+- ошибки запуска browser profile, например отсутствующий `user_data_dir`, остаются настоящими ошибками конфигурации.
+
+Новое правило разработки:
+
+- перед дальнейшим Instagram selector tuning сначала запускать `doctor-instagram-web`;
+- если статус `login_wall`, нужно выбрать реально logged-in Chrome/Edge profile или проверить `headless=false`;
+- полный `person_monitor` smoke для Instagram имеет смысл запускать только после preflight без login wall.
+
+## Live smoke: Instagram web auth preflight
+
+После добавления `doctor-instagram-web` был выполнен live smoke с временным config вне repo:
+
+- config: `%TEMP%\spa_instagram_web_auth_doctor.yaml`;
+- target URL: `https://www.instagram.com/nasa/`;
+- run id: `doctor-live-1`;
+- browser profile: Chrome `Default`;
+- `authenticated_browser.enabled=true`;
+- `copy_profile=true`;
+- output JSON: `%TEMP%\spa_instagram_web_auth_doctor\raw\_diagnostics\doctor-live-1\instagram_web_session.json`.
+
+Результат:
+
+- `status=content_visible`;
+- `login_wall_detected=false`;
+- `profile_unavailable_detected=false`;
+- `serialized_data_detected=true`;
+- `body_text_length=0`;
+- `post_links=0`;
+- `json_script_blocks=39`;
+- warning только один: используется authenticated browser profile snapshot из Chrome `Default`.
+
+Вывод:
+
+- текущий Chrome `Default` для preflight уже не выглядит как login wall;
+- visible DOM всё ещё пустой, поэтому обычные DOM selectors не являются главным следующим рычагом;
+- следующий Instagram batch, если продолжать эту поверхность, должен смотреть структуру serialized JSON на profile page и проверять, есть ли там media/comment payloads, которые можно безопасно извлечь без private API.

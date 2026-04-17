@@ -146,6 +146,56 @@ class InstagramWebCollector(BaseCollector):
                 discovered[source_id] = payload
         return list(discovered.values())
 
+    def diagnose_browser_session(self, target_url: str | None) -> dict[str, Any]:
+        from playwright.sync_api import sync_playwright
+
+        resolved_target_url = target_url or self._resolve_profile_url()
+        settings = self.settings.authenticated_browser
+        warnings: list[str] = []
+        payload: dict[str, Any] = {}
+        status = "runtime_error"
+        with sync_playwright() as playwright:
+            runtime = self._open_collection_context(playwright)
+            warnings.extend(runtime.warnings)
+            page = None
+            try:
+                page = runtime.context.new_page()
+                page.goto(
+                    resolved_target_url,
+                    wait_until="domcontentloaded",
+                    timeout=int(self.settings.timeout_seconds * 1000),
+                )
+                payload = self._extract_session_diagnostic_payload(page)
+                status = self._session_diagnostic_status(payload)
+            except Exception as exc:
+                message = str(exc).strip() or exc.__class__.__name__
+                warnings.append(f"Instagram web session diagnostic failed after browser launch: {message}")
+            finally:
+                if page is not None:
+                    page.close()
+                runtime.close()
+
+        warnings.extend(self._session_diagnostic_warnings(status))
+        page_state = self._normalize_session_page_state(payload.get("page_state") or {})
+        extraction_sources = payload.get("extraction_sources") or {}
+        return {
+            "collector": self.name,
+            "target_url": resolved_target_url,
+            "final_url": clean_text(payload.get("final_url")) or resolved_target_url,
+            "authenticated_browser_enabled": settings.enabled,
+            "browser": settings.browser,
+            "profile_directory": settings.profile_directory,
+            "copy_profile": settings.copy_profile,
+            "status": status,
+            "page_state": page_state,
+            "extraction_sources": {
+                "post_links": self._int_value(extraction_sources.get("post_links")),
+                "json_script_blocks": self._int_value(extraction_sources.get("json_script_blocks")),
+            },
+            "warnings": list(dict.fromkeys(warnings)),
+            "body_sample": clean_text(payload.get("body_sample")),
+        }
+
     def _collect_comments_for_post(
         self,
         *,
@@ -572,6 +622,36 @@ class InstagramWebCollector(BaseCollector):
             "page_state": payload.get("page_state") or {},
         }
 
+    def _extract_session_diagnostic_payload(self, page: Any) -> dict[str, Any]:
+        return page.evaluate(
+            """
+            () => {
+              const bodyText = (document.body?.innerText || '').trim();
+              const lowerBodyText = bodyText.toLowerCase();
+              const jsonScripts = Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))
+                .map((script) => (script.textContent || '').trim())
+                .filter((text) => text && (text.startsWith('{') || text.startsWith('[')));
+              const postLinks = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
+              return {
+                final_url: location.href,
+                page_state: {
+                  title: document.title || '',
+                  url: location.href,
+                  login_wall_detected: /log in|sign up|log into instagram|create an account/.test(lowerBodyText),
+                  profile_unavailable_detected: /sorry, this page isn't available|page isn't available|content isn't available/.test(lowerBodyText),
+                  serialized_data_detected: jsonScripts.length > 0,
+                  body_text_length: bodyText.length,
+                },
+                extraction_sources: {
+                  post_links: postLinks.length,
+                  json_script_blocks: jsonScripts.length,
+                },
+                body_sample: bodyText.slice(0, 500),
+              };
+            }
+            """
+        )
+
     @classmethod
     def _normalize_post_payload_item(cls, item: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(item)
@@ -681,6 +761,53 @@ class InstagramWebCollector(BaseCollector):
                 f"script_comments={extraction_sources.get('script_comments', 0)}."
             )
         return warnings
+
+    def _session_diagnostic_status(self, payload: dict[str, Any]) -> str:
+        page_state = self._normalize_session_page_state(payload.get("page_state") or {})
+        extraction_sources = payload.get("extraction_sources") or {}
+        if page_state["login_wall_detected"]:
+            return "login_wall"
+        if page_state["profile_unavailable_detected"]:
+            return "profile_unavailable"
+        if (
+            page_state["serialized_data_detected"]
+            or self._int_value(extraction_sources.get("post_links")) > 0
+            or page_state["body_text_length"] > 0
+        ):
+            return "content_visible"
+        return "empty_dom"
+
+    def _session_diagnostic_warnings(self, status: str) -> list[str]:
+        if status == "login_wall":
+            if self._uses_authenticated_browser():
+                return [
+                    "Authenticated browser mode is enabled, but Instagram still returned login/signup UI. "
+                    "The selected browser profile may not be logged in to Instagram."
+                ]
+            return [
+                "Instagram public web returned login/signup UI; enable authenticated_browser with a logged-in browser profile."
+            ]
+        if status == "profile_unavailable":
+            return ["Instagram profile surface appears unavailable or inaccessible in the current web UI."]
+        if status == "empty_dom":
+            return ["Instagram web session diagnostic loaded an empty DOM with no visible profile or serialized data signals."]
+        return []
+
+    @classmethod
+    def _normalize_session_page_state(cls, page_state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "login_wall_detected": bool(page_state.get("login_wall_detected")),
+            "profile_unavailable_detected": bool(page_state.get("profile_unavailable_detected")),
+            "serialized_data_detected": bool(page_state.get("serialized_data_detected")),
+            "body_text_length": cls._int_value(page_state.get("body_text_length")),
+        }
+
+    @staticmethod
+    def _int_value(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     @classmethod
     def _normalize_comment_payload_item(cls, item: dict[str, Any], *, index: int) -> dict[str, Any] | None:

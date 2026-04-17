@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
 import typer
 
 from .analysis.service import AnalysisService
+from .collectors.instagram_web import InstagramWebCollector
 from .config import ProjectConfig, load_config
 from .normalize import NormalizationService
 from .paths import ProjectPaths, project_root_for_config, relative_output_paths_warning
 from .pipeline import CollectionService, PipelineRunner
 from .reporting.service import ReportService, ReviewExportService
+from .utils import make_run_id
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
@@ -68,6 +71,29 @@ def review_export(
     service = ReviewExportService(config=config, paths=paths)
     outputs = service.run(run_id=run_id)
     typer.echo(f"Review files written: {', '.join(str(path) for path in outputs)}")
+
+
+@app.command("doctor-instagram-web")
+def doctor_instagram_web(
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    target_url: Optional[str] = typer.Option(None, "--target-url"),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    _, paths, config = _load_project(config_path)
+    resolved_run_id = run_id or make_run_id()
+    collector = InstagramWebCollector(config)
+    diagnostic = collector.diagnose_browser_session(target_url)
+    diagnostic_dir = paths.raw_root / "_diagnostics" / resolved_run_id
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    diagnostic_path = diagnostic_dir / "instagram_web_session.json"
+    diagnostic_path.write_text(
+        json.dumps(diagnostic, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(f"Instagram web diagnostic written: {diagnostic_path}")
+    typer.echo(f"Instagram web diagnostic status: {diagnostic['status']}")
+    for warning in diagnostic.get("warnings") or []:
+        typer.echo(f"Warning: {warning}", err=True)
 
 
 @app.command()

@@ -2680,6 +2680,117 @@ def test_instagram_web_authenticated_runtime_uses_best_effort_profile_copy(monke
     assert captured["best_effort_profile_copy"] is True
 
 
+def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) -> None:
+    config = _instagram_web_config()
+    config.collector.instagram_web.authenticated_browser.enabled = True
+    collector = InstagramWebCollector(config)
+
+    class FakePage:
+        url = "https://www.instagram.com/nasa/"
+
+        def goto(self, url: str, **kwargs: Any) -> None:
+            self.url = url
+
+        def evaluate(self, script: str) -> dict[str, Any]:
+            return {
+                "final_url": self.url,
+                "page_state": {
+                    "login_wall_detected": True,
+                    "profile_unavailable_detected": False,
+                    "serialized_data_detected": False,
+                    "body_text_length": 18,
+                },
+                "extraction_sources": {"post_links": 0, "json_script_blocks": 0},
+                "body_sample": "Log In\nSign Up",
+            }
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    class FakePlaywright:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(
+        collector,
+        "_open_collection_context",
+        lambda playwright: SimpleNamespace(context=FakeContext(), warnings=["runtime warning"], close=lambda: None),
+    )
+
+    diagnostic = collector.diagnose_browser_session("https://www.instagram.com/nasa/")
+
+    assert diagnostic["status"] == "login_wall"
+    assert diagnostic["authenticated_browser_enabled"] is True
+    assert diagnostic["browser"] == "chrome"
+    assert diagnostic["profile_directory"] == "Default"
+    assert diagnostic["copy_profile"] is True
+    assert diagnostic["target_url"] == "https://www.instagram.com/nasa/"
+    assert diagnostic["final_url"] == "https://www.instagram.com/nasa/"
+    assert diagnostic["page_state"]["body_text_length"] == 18
+    assert "runtime warning" in diagnostic["warnings"]
+    assert any("login/signup UI" in warning for warning in diagnostic["warnings"])
+
+
+def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypatch) -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+
+    class FakePage:
+        url = "https://www.instagram.com/example_account/"
+
+        def goto(self, url: str, **kwargs: Any) -> None:
+            self.url = url
+
+        def evaluate(self, script: str) -> dict[str, Any]:
+            return {
+                "final_url": self.url,
+                "page_state": {
+                    "login_wall_detected": False,
+                    "profile_unavailable_detected": False,
+                    "serialized_data_detected": True,
+                    "body_text_length": 32,
+                },
+                "extraction_sources": {"post_links": 1, "json_script_blocks": 1},
+                "body_sample": "Example Account visible profile",
+            }
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    class FakePlaywright:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(
+        collector,
+        "_open_collection_context",
+        lambda playwright: SimpleNamespace(context=FakeContext(), warnings=[], close=lambda: None),
+    )
+
+    diagnostic = collector.diagnose_browser_session(None)
+
+    assert diagnostic["status"] == "content_visible"
+    assert diagnostic["target_url"] == "https://www.instagram.com/example_account/"
+    assert diagnostic["page_state"]["serialized_data_detected"] is True
+    assert diagnostic["extraction_sources"]["post_links"] == 1
+    assert diagnostic["warnings"] == []
+
+
 def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:
     collector = InstagramWebCollector(_instagram_web_config())
     captured: dict[str, str] = {}

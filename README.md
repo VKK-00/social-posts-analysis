@@ -417,6 +417,35 @@ Expected public-web shape today:
 - propagations: only directly observable public surfaces
 - warning: public comment visibility depends on the current Instagram web UI
 
+### Instagram Web Auth Preflight
+
+Use `doctor-instagram-web` before spending time on Instagram selector tuning. It checks whether the configured Chrome or Edge profile actually opens Instagram as a logged-in session and writes a diagnostic JSON file to `data/raw/_diagnostics/<run_id>/instagram_web_session.json`.
+
+```powershell
+$env:SOCIAL_BROWSER_USER_DATA_DIR="C:\Users\<user>\AppData\Local\Google\Chrome\User Data"
+$env:SOCIAL_BROWSER_PROFILE_DIRECTORY="Default"
+social-posts-analysis doctor-instagram-web --config config/project.local.yaml --target-url https://www.instagram.com/nasa/
+```
+
+Relevant config:
+
+```yaml
+collector:
+  mode: "web"
+  instagram_web:
+    enabled: true
+    headless: true
+    authenticated_browser:
+      enabled: true
+      browser: "chrome"
+      profile_directory: "Default"
+      copy_profile: true
+```
+
+Use `SOCIAL_BROWSER_USER_DATA_DIR` for the browser user-data root, not the nested profile folder. For Chrome this is usually `C:\Users\<user>\AppData\Local\Google\Chrome\User Data`; the profile name, such as `Default` or `Profile 1`, belongs in `SOCIAL_BROWSER_PROFILE_DIRECTORY`.
+
+If the diagnostic returns `status: "login_wall"`, the selected profile launched but Instagram still showed login/signup UI. Try a profile that is visibly logged in to Instagram, or temporarily set `instagram_web.headless: false` to validate the session in a visible browser window. Keep `copy_profile: true` when using a normal daily browser profile: it scans a temporary snapshot instead of attaching directly to the profile that Chrome may already have open.
+
 ## Usage
 
 Full pipeline:
@@ -452,6 +481,7 @@ The package exposes the `social-posts-analysis` CLI with:
 - `review-export`
 - `report`
 - `export-tables`
+- `doctor-instagram-web`
 - `run-all`
 - `run-many`
 
