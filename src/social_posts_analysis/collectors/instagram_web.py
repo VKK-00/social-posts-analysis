@@ -504,6 +504,14 @@ class InstagramWebCollector(BaseCollector):
                 const milliseconds = numeric > 100000000000 ? numeric : numeric * 1000;
                 return new Date(milliseconds).toISOString();
               };
+              const statusIdFromUrl = (href) => {
+                try {
+                  const url = new URL(href, 'https://www.instagram.com');
+                  const parts = url.pathname.split('/').filter(Boolean);
+                  if (parts.length >= 2 && ['p', 'reel'].includes(parts[0])) return parts[1];
+                } catch (error) {}
+                return '';
+              };
               const ownerUsername = (item) => firstText(
                 item?.owner?.username,
                 item?.user?.username,
@@ -529,6 +537,25 @@ class InstagramWebCollector(BaseCollector):
                 item?.replied_to_comment_id,
                 parentId
               );
+              const mediaStatusId = (item) => {
+                if (!item || typeof item !== 'object') return '';
+                const shortcode = firstText(item.shortcode, item.code);
+                if (!shortcode || !/^[A-Za-z0-9_-]{3,}$/.test(shortcode)) return '';
+                const hasMediaSignal = Boolean(
+                  item.display_url ||
+                  item.thumbnail_src ||
+                  item.thumbnail_url ||
+                  item.edge_media_to_caption ||
+                  item.caption ||
+                  item.taken_at_timestamp ||
+                  item.owner ||
+                  item.user ||
+                  item.is_video !== undefined ||
+                  item.like_count !== undefined ||
+                  item.comment_count !== undefined
+                );
+                return hasMediaSignal ? shortcode : '';
+              };
               const candidateFromComment = (item, parentId) => {
                 if (!item || typeof item !== 'object') return null;
                 const text = commentText(item);
@@ -547,10 +574,10 @@ class InstagramWebCollector(BaseCollector):
                   like_count: countValue(item.edge_liked_by) || countValue(item.like_count) || countValue(item.likes_count),
                 };
               };
-              const collectCommentCandidates = (root, output, parentId, seenObjects) => {
+              const collectCommentCandidates = (root, output, parentId, seenObjects, skipRoot = false) => {
                 if (!root || typeof root !== 'object' || seenObjects.has(root)) return;
                 seenObjects.add(root);
-                const candidate = candidateFromComment(root, parentId);
+                const candidate = skipRoot ? null : candidateFromComment(root, parentId);
                 const nextParentId = candidate ? candidate.comment_id : parentId;
                 if (candidate) {
                   output.push(candidate);
@@ -563,22 +590,49 @@ class InstagramWebCollector(BaseCollector):
                   collectCommentCandidates(value, output, nextParentId, seenObjects);
                 }
               };
-              const collectScriptComments = () => {
-                const comments = [];
-                for (const script of Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))) {
-                  const raw = (script.textContent || '').trim();
-                  if (!raw || (!raw.startsWith('{') && !raw.startsWith('['))) continue;
-                  try {
-                    const parsed = JSON.parse(raw);
-                    collectCommentCandidates(parsed, comments, '', new Set());
-                  } catch (error) {}
+              const collectTargetCommentCandidates = (root, targetStatusId, output, seenObjects) => {
+                if (!targetStatusId || !root || typeof root !== 'object' || seenObjects.has(root)) return;
+                seenObjects.add(root);
+                if (mediaStatusId(root) === targetStatusId) {
+                  collectCommentCandidates(root, output, '', new Set(), true);
+                  return;
                 }
+                if (Array.isArray(root)) {
+                  for (const item of root) collectTargetCommentCandidates(item, targetStatusId, output, seenObjects);
+                  return;
+                }
+                for (const value of Object.values(root)) {
+                  collectTargetCommentCandidates(value, targetStatusId, output, seenObjects);
+                }
+              };
+              const dedupeComments = (comments) => {
                 const byId = new Map();
                 for (const comment of comments) {
                   if (!comment.comment_id || byId.has(comment.comment_id)) continue;
                   byId.set(comment.comment_id, comment);
                 }
                 return Array.from(byId.values());
+              };
+              const collectScriptComments = () => {
+                const allComments = [];
+                const targetComments = [];
+                const targetStatusId = statusIdFromUrl(location.href);
+                for (const script of Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))) {
+                  const raw = (script.textContent || '').trim();
+                  if (!raw || (!raw.startsWith('{') && !raw.startsWith('['))) continue;
+                  try {
+                    const parsed = JSON.parse(raw);
+                    collectCommentCandidates(parsed, allComments, '', new Set());
+                    collectTargetCommentCandidates(parsed, targetStatusId, targetComments, new Set());
+                  } catch (error) {}
+                }
+                const allScriptComments = dedupeComments(allComments);
+                const targetScriptComments = dedupeComments(targetComments);
+                return {
+                  all_comments: allScriptComments,
+                  target_comments: targetScriptComments,
+                  selected_comments: targetScriptComments.length ? targetScriptComments : allScriptComments,
+                };
               };
               const isCommentCandidate = (node) => {
                 const rawText = (node.innerText || '').trim();
@@ -606,13 +660,17 @@ class InstagramWebCollector(BaseCollector):
               });
               const bodyText = (document.body?.innerText || '').trim();
               const lowerBodyText = bodyText.toLowerCase();
-              const scriptComments = collectScriptComments();
+              const scriptCommentSets = collectScriptComments();
+              const scriptComments = scriptCommentSets.selected_comments;
               return {
                 comments,
                 script_comments: scriptComments,
+                target_script_comments: scriptCommentSets.target_comments,
                 comment_extraction_sources: {
                   dom_comments: comments.length,
                   script_comments: scriptComments.length,
+                  target_script_comments: scriptCommentSets.target_comments.length,
+                  all_script_comments: scriptCommentSets.all_comments.length,
                 },
                 page_state: {
                   title: document.title || '',
@@ -625,8 +683,14 @@ class InstagramWebCollector(BaseCollector):
             }
             """
         )
+        return self._select_comments_for_post_payload(payload)
+
+    def _select_comments_for_post_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         dom_comments = payload.get("comments") or []
-        script_comments = payload.get("script_comments") or []
+        all_script_comments = payload.get("script_comments") or []
+        target_script_comments = payload.get("target_script_comments") or []
+        script_comments = target_script_comments if target_script_comments else all_script_comments
+        script_comments_source = "target_media" if target_script_comments else "global"
         merged_comments = self._merge_comment_candidates(dom_comments, script_comments)
         return {
             "comments": merged_comments,
@@ -634,7 +698,10 @@ class InstagramWebCollector(BaseCollector):
             "comment_extraction_sources": {
                 "dom_comments": len(dom_comments),
                 "script_comments": len(script_comments),
+                "target_script_comments": len(target_script_comments),
+                "all_script_comments": len(all_script_comments),
                 "merged_comments": len(merged_comments),
+                "script_comments_source": script_comments_source,
             },
             "page_state": payload.get("page_state") or {},
         }

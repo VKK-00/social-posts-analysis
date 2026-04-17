@@ -3098,12 +3098,75 @@ def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:
     assert payload["comment_extraction_sources"] == {
         "dom_comments": 1,
         "script_comments": 2,
+        "target_script_comments": 0,
+        "all_script_comments": 2,
         "merged_comments": 2,
+        "script_comments_source": "global",
     }
     assert [comment["comment_id"] for comment in payload["comments"]] == ["c1", "c2"]
     assert payload["comments"][0]["text"] == "JSON comment with @subject_handle"
     assert payload["comments"][0]["author_username"] == "alice"
     assert payload["comments"][1]["reply_to_comment_id"] == "c1"
+
+
+def test_instagram_web_post_payload_prefers_target_serialized_comments() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+
+    payload = collector._select_comments_for_post_payload(
+        {
+            "comments": [],
+            "script_comments": [
+                {
+                    "comment_id": "other-c1",
+                    "text": "Recommended media comment",
+                    "raw_text": "Recommended media comment",
+                    "author_username": "recommended",
+                }
+            ],
+            "target_script_comments": [
+                {
+                    "comment_id": "target-c1",
+                    "text": "Target media comment with @subject_handle",
+                    "raw_text": "Target media comment with @subject_handle",
+                    "author_username": "alice",
+                }
+            ],
+        }
+    )
+
+    assert payload["comment_extraction_sources"] == {
+        "dom_comments": 0,
+        "script_comments": 1,
+        "target_script_comments": 1,
+        "all_script_comments": 1,
+        "merged_comments": 1,
+        "script_comments_source": "target_media",
+    }
+    assert [comment["comment_id"] for comment in payload["comments"]] == ["target-c1"]
+    assert payload["comments"][0]["text"] == "Target media comment with @subject_handle"
+
+
+def test_instagram_web_post_payload_keeps_global_serialized_fallback_without_target_comments() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+
+    payload = collector._select_comments_for_post_payload(
+        {
+            "comments": [],
+            "script_comments": [
+                {
+                    "comment_id": "global-c1",
+                    "text": "Best effort global comment",
+                    "raw_text": "Best effort global comment",
+                    "author_username": "alice",
+                }
+            ],
+            "target_script_comments": [],
+        }
+    )
+
+    assert payload["comment_extraction_sources"]["script_comments_source"] == "global"
+    assert payload["comment_extraction_sources"]["target_script_comments"] == 0
+    assert [comment["comment_id"] for comment in payload["comments"]] == ["global-c1"]
 
 
 def test_instagram_web_post_payload_warnings_explain_hidden_comments() -> None:
@@ -3141,6 +3204,8 @@ def test_instagram_web_post_payload_script_uses_strict_comment_candidates() -> N
 
     assert "isCommentCandidate" in captured["script"]
     assert "collectScriptComments" in captured["script"]
+    assert "collectTargetCommentCandidates" in captured["script"]
+    assert "target_script_comments" in captured["script"]
     assert "article ul li, div[role=\"dialog\"] ul li, ul li" in captured["script"]
     assert "ul ul, article ul ul li" not in captured["script"]
 

@@ -1239,3 +1239,37 @@ Privacy/безопасность:
 - наличие `target_media_candidates > 0` ещё не достаточно, если configured source важен;
 - для безопасного Instagram extraction нужно одновременно проверять `target_media_candidates > 0` и совпадение `target_author_username` с ожидаемым source username;
 - текущий использованный detail URL не подходит как NASA acceptance fixture, потому что целевой post принадлежит `starbucks`.
+
+## Обновление: Instagram web target-aware comment fallback
+
+После target-aware diagnostic layer добавлен такой же защитный принцип в сам `instagram_web` detail extraction.
+
+Что изменено:
+
+- `_extract_post_payload(...)` теперь вычисляет shortcode целевого detail URL через `location.href`;
+- browser-side serialized fallback сначала ищет media subtree с этим shortcode;
+- если target media subtree дал comments, collector использует только эти `target_script_comments`;
+- общий `script_comments` fallback остаётся запасным путём, если target subtree не дал comments;
+- `comment_extraction_sources` теперь показывает:
+  - `target_script_comments`;
+  - `all_script_comments`;
+  - `script_comments_source`, где значение `target_media` означает безопасный target-aware путь, а `global` означает старый best-effort fallback.
+
+Почему выбран такой подход:
+
+- Instagram detail pages могут содержать JSON не только целевого post, но и unrelated/recommended media;
+- старый широкий обход всех JSON мог ошибочно привязать чужие comments к текущему `PostSnapshot`;
+- полный разбор внутренних Instagram JSON schema слишком нестабилен для v1, поэтому выбран ограниченный и проверяемый guard: сначала фильтр по shortcode целевого post, затем старый fallback.
+
+Что не менялось:
+
+- public config schema не менялась;
+- normalized tables и `person_monitor` contracts не менялись;
+- fuzzy matching, alias logic и authenticated-browser config не расширялись;
+- DOM selector path остался как был, изменение касается только выбора serialized comment fallback.
+
+Как проверять:
+
+- unit tests должны подтверждать, что `target_script_comments` имеют приоритет над unrelated global comments;
+- если target subtree не дал comments, `script_comments_source=global` явно показывает best-effort режим;
+- live smoke на Instagram detail URL всё ещё должен интерпретироваться вместе с `target_author_username`, потому что detail URL может принадлежать не ожидаемому profile.
