@@ -1390,3 +1390,77 @@ Live smoke после shell fallback:
 - main Starbucks caption не попал в comments;
 - `login_wall_detected=true` внутри detail page `page_state` остаётся ожидаемым: authenticated browser получает shell text, но сама страница всё равно содержит login/signup wrapper;
 - это улучшение не делает Instagram DOM extraction полной, но закрывает конкретный data-quality gap, где comments видны в body text и раньше терялись.
+
+## Обновление: OpenClaw file-contract export
+
+Добавлен первый интеграционный слой для OpenClaw.
+
+Главное решение:
+
+- v1 сделан как контракт `CLI + files`;
+- OpenClaw должен запускать существующий CLI как локальный процесс;
+- после запуска OpenClaw читает один стабильный JSON bundle;
+- проект не поднимает HTTP server, webhook, MCP server и не делает вызовы Claude/OpenClaw API;
+- export слой не запускает collectors, normalization, analysis или reporting повторно.
+
+Что добавлено:
+
+- [src/social_posts_analysis/openclaw.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\openclaw.py)
+  Новый read-only сервис `OpenClawExportService`.
+- [src/social_posts_analysis/cli.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\cli.py)
+  Новая команда `openclaw-export`.
+
+Команда:
+
+```powershell
+social-posts-analysis openclaw-export --config config/project.local.yaml --run-id <run_id>
+```
+
+Выходные файлы:
+
+- `reports/openclaw/<run_id>/bundle.json`;
+- `reports/openclaw/<run_id>/brief.md`.
+
+`bundle.json` использует schema version:
+
+- `openclaw.social_posts_analysis.v1`.
+
+Что попадает в bundle:
+
+- `run_id`, `created_at`, `project_name`;
+- `source`, `platform`, `source_kind`, `collector`, `mode`, `status`;
+- counts по `posts`, `comments`, `propagations`, `match_hits`, `observed_sources`, `warnings`;
+- пути к raw manifest, processed directory, DuckDB, report exports и самому OpenClaw bundle;
+- warnings с явным `source_run_id`, если raw manifests доступны;
+- coverage gaps по post comments и propagation comments;
+- для `person_monitor`: observed sources, match breakdown, top matched posts/comments;
+- deterministic `next_actions`, построенные из status, warnings и coverage gaps.
+
+Почему выбран этот путь:
+
+- текущая архитектура уже local-first и складывает все артефакты в `data/`, `reports/`, `review/`;
+- OpenClaw не нужно знать внутренние parquet/DuckDB schemas, достаточно прочитать `bundle.json`;
+- read-only export безопаснее, чем новый серверный surface с отдельной авторизацией;
+- отдельный MCP/HTTP слой можно добавить позже поверх уже стабильного `openclaw-export`, если он действительно понадобится.
+
+Что принципиально не изменено:
+
+- public config schema не менялась;
+- normalized table names не менялись;
+- `person_monitor`, `match_hits`, `observed_sources` не менялись;
+- browser sessions, private tokens и raw authenticated profile paths не передаются OpenClaw напрямую;
+- команда не выполняет collection/analysis повторно.
+
+Проверка:
+
+- добавлены tests для `OpenClawExportService`;
+- добавлены CLI tests для `openclaw-export`;
+- проверяется feed run, person_monitor run, отсутствие optional tables, сохранение `source_run_id` в warnings и понятная ошибка для отсутствующего `run_id`.
+
+Manual smoke:
+
+- использован существующий raw run `20260413T110500Z`;
+- config был создан во временном `%TEMP%` и писал OpenClaw output тоже во временный reports directory, чтобы не добавлять generated artifacts в репозиторий;
+- команда `openclaw-export` успешно создала `bundle.json` и `brief.md`;
+- bundle показал `schema_version=openclaw.social_posts_analysis.v1`, `platform=facebook`, `source_kind=feed`, `collector=public_web`, `status=partial`;
+- counts из smoke: `posts=1`, `comments=1`, `propagations=0`, `match_hits=0`, `observed_sources=0`, `warnings=3`.

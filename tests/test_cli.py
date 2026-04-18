@@ -106,3 +106,116 @@ paths:
     assert payload["serialized_candidates"] == {"media": [], "target_media": [], "other_media": [], "comments": []}
     assert payload["serialized_structure"]["scripts_analyzed"] == 0
     assert "Instagram web diagnostic written" in result.output
+
+
+def test_openclaw_export_writes_bundle_json(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config"
+    raw_dir = project_root / "data/raw/run-1"
+    config_dir.mkdir(parents=True)
+    raw_dir.mkdir(parents=True)
+    config_path = config_dir / "project.yaml"
+    config_path.write_text(
+        """
+project_name: openclaw-cli-test
+source:
+  platform: facebook
+  source_id: page_1
+  source_name: Example Page
+sides:
+  - side_id: side_a
+    name: Actor A
+collector:
+  mode: hybrid
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  review_dir: review
+  reports_dir: reports
+  database_path: data/processed/social_posts_analysis.duckdb
+""".strip(),
+        encoding="utf-8",
+    )
+    (raw_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "collector": "facebook_web",
+                "mode": "web",
+                "status": "success",
+                "warnings": [],
+                "source": {
+                    "platform": "facebook",
+                    "source_kind": "feed",
+                    "source_id": "page_1",
+                    "source_name": "Example Page",
+                    "source_type": "page",
+                },
+                "posts": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "openclaw-export",
+            "--config",
+            str(config_path),
+            "--run-id",
+            "run-1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    bundle_path = project_root / "reports/openclaw/run-1/bundle.json"
+    assert bundle_path.exists()
+    payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "openclaw.social_posts_analysis.v1"
+    assert payload["run_id"] == "run-1"
+    assert "OpenClaw bundle written" in result.output
+
+
+def test_openclaw_export_reports_missing_run(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "project.yaml"
+    config_path.write_text(
+        """
+project_name: openclaw-cli-test
+source:
+  platform: facebook
+  source_id: page_1
+  source_name: Example Page
+sides:
+  - side_id: side_a
+    name: Actor A
+collector:
+  mode: hybrid
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  review_dir: review
+  reports_dir: reports
+  database_path: data/processed/social_posts_analysis.duckdb
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "openclaw-export",
+            "--config",
+            str(config_path),
+            "--run-id",
+            "missing-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "OpenClaw export requires an existing run_id" in result.output

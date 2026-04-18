@@ -31,6 +31,7 @@ Support is intentionally tiered. The project does not claim equal coverage acros
   - aggregated `origin_plus_propagations`
 - exports review files for manual corrections
 - renders Markdown, HTML, CSV, and XLSX reports
+- exports a stable OpenClaw JSON bundle for agent or chatbot handoff through local files
 
 ## Project Layout
 
@@ -479,7 +480,25 @@ social-posts-analysis analyze --config config/project.local.yaml --run-id <run_i
 social-posts-analysis review-export --config config/project.local.yaml --run-id <run_id>
 social-posts-analysis report --config config/project.local.yaml --run-id <run_id>
 social-posts-analysis export-tables --config config/project.local.yaml --run-id <run_id>
+social-posts-analysis openclaw-export --config config/project.local.yaml --run-id <run_id>
 ```
+
+### OpenClaw File Export
+
+`openclaw-export` is a read-only integration layer. It does not collect, normalize, analyze, or rerun the pipeline. It reads an existing run from `data/raw/<run_id>/`, optional parquet/DuckDB tables under `data/processed/`, and optional report exports under `reports/`.
+
+```powershell
+social-posts-analysis openclaw-export --config config/project.local.yaml --run-id <run_id>
+```
+
+Outputs:
+
+- `reports/openclaw/<run_id>/bundle.json`
+- `reports/openclaw/<run_id>/brief.md`
+
+The JSON bundle uses schema version `openclaw.social_posts_analysis.v1` and includes run metadata, source/platform/collector status, local artifact paths, counts, warnings with `source_run_id` when available, person-monitor `observed_sources` and `match_hits` summaries, coverage gaps, and deterministic next actions.
+
+This v1 contract is intentionally `CLI + files`. It does not start an HTTP server, webhook listener, MCP server, browser session, or Claude/OpenClaw API call. OpenClaw can run the CLI as a local process and then read `bundle.json` without knowing the internal repository layout.
 
 ## CLI Commands
 
@@ -491,6 +510,7 @@ The package exposes the `social-posts-analysis` CLI with:
 - `review-export`
 - `report`
 - `export-tables`
+- `openclaw-export`
 - `doctor-instagram-web`
 - `run-all`
 - `run-many`
@@ -530,6 +550,8 @@ Reports:
 - `reports/report_<run_id>.html`
 - `reports/report_<run_id>.xlsx`
 - `reports/report_<run_id>_tables/*.csv`
+- `reports/openclaw/<run_id>/bundle.json`
+- `reports/openclaw/<run_id>/brief.md`
 
 Important report exports include:
 

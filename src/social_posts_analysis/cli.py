@@ -10,6 +10,7 @@ from .analysis.service import AnalysisService
 from .collectors.instagram_web import InstagramWebCollector
 from .config import ProjectConfig, load_config
 from .normalize import NormalizationService
+from .openclaw import OpenClawExportService
 from .paths import ProjectPaths, project_root_for_config, relative_output_paths_warning
 from .pipeline import CollectionService, PipelineRunner
 from .reporting.service import ReportService, ReviewExportService
@@ -116,6 +117,22 @@ def export_tables(
     service = ReportService(config=config, paths=paths)
     outputs = service.run_tabular(run_id=run_id)
     typer.echo(f"Tabular exports written: {', '.join(str(path) for path in outputs)}")
+
+
+@app.command("openclaw-export")
+def openclaw_export(
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    _, paths, config = _load_project(config_path)
+    service = OpenClawExportService(config=config, paths=paths)
+    try:
+        outputs = service.run(run_id=run_id)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"OpenClaw bundle written: {outputs.bundle_path}")
+    typer.echo(f"OpenClaw brief written: {outputs.brief_path}")
 
 
 @app.command("run-all")
