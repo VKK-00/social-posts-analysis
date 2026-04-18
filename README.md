@@ -521,12 +521,15 @@ Reusable Telegram MTProto smoke config:
 $env:TELEGRAM_SESSION_FILE=".sessions/smoke"
 $env:TELEGRAM_API_ID="123456"
 $env:TELEGRAM_API_HASH="your-api-hash"
+social-posts-analysis doctor-telegram-mtproto --config config/smoke/telegram_mtproto_history.yaml --target-source durov --run-id smoke-telegram-history-preflight
 social-posts-analysis history-run --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
 social-posts-analysis history-report --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
 social-posts-analysis openclaw-export --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
 ```
 
 The smoke template writes to `data/smoke/`, `reports/smoke/`, and `review/smoke/` so it does not mix with normal run outputs. It uses the public Telegram source `durov`, three monthly windows, `max_items_per_window: 100`, and `max_comments_per_post: 200`. The file intentionally does not store MTProto credentials; they come from `TELEGRAM_SESSION_FILE`, `TELEGRAM_API_ID`, and `TELEGRAM_API_HASH`.
+
+Run `doctor-telegram-mtproto` before the history smoke. It writes `data/smoke/raw/_diagnostics/<run_id>/telegram_mtproto_session.json` with session/auth/source status. `status: "ready"` means the session is authorized and the source can be resolved. `status: "unauthorized_session"` means the configured session file needs a one-time Telegram login before `history-run`.
 
 `history-report` runs the historical analysis step and writes:
 
@@ -683,6 +686,7 @@ The current test suite covers:
 - review override application
 - historical monthly windows, resume behavior, temporal tables, history reports, and OpenClaw history bundles
 - smoke config loading for nested files under `config/smoke/`
+- Telegram MTProto doctor diagnostics for history smoke preflight
 
 ## CI
 

@@ -1657,3 +1657,48 @@ social-posts-analysis openclaw-export --config config/smoke/telegram_mtproto_his
 
 - live MTProto smoke не запускался в этом batch, потому что для него нужна валидная Telegram session и реальные API credentials;
 - текущий batch проверяет, что reusable config корректно грузится, валидируется и резолвит output paths от корня проекта.
+
+## Обновление: Telegram MTProto history preflight doctor
+
+Добавлена команда для быстрой диагностики Telegram MTProto session перед запуском historical smoke:
+
+```powershell
+social-posts-analysis doctor-telegram-mtproto --config config/smoke/telegram_mtproto_history.yaml --target-source durov --run-id smoke-telegram-history-preflight
+```
+
+Что изменено:
+
+- [src/social_posts_analysis/cli.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\cli.py)
+  Добавлена CLI-команда `doctor-telegram-mtproto`.
+- [src/social_posts_analysis/collectors/telegram_mtproto.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\telegram_mtproto.py)
+  Добавлен метод `TelegramMtprotoCollector.diagnose_session(...)`.
+- [tests/test_cli.py](C:\Coding projects\facebook_posts_analysis\tests\test_cli.py)
+  Добавлен CLI regression test, что команда пишет diagnostic JSON.
+- [tests/test_collectors.py](C:\Coding projects\facebook_posts_analysis\tests\test_collectors.py)
+  Добавлены collector tests для `ready` и `unauthorized_session`.
+
+Файл диагностики:
+
+- путь: `data/smoke/raw/_diagnostics/<run_id>/telegram_mtproto_session.json`;
+- поля: `collector`, `target_source`, `session_file`, `api_id_present`, `api_hash_present`, `status`, `source_state`, `source`, `oldest_message_at`, `warnings`;
+- `source_state` показывает, подключился ли client, авторизована ли session, найден ли source, найдено ли старое видимое сообщение и есть ли linked discussion.
+
+Статусы:
+
+- `ready`: session авторизована, source найден, можно запускать `history-run`;
+- `unauthorized_session`: session file есть в конфиге, но Telegram user login ещё не выполнен;
+- `source_unavailable`: session доступна, но target source не удалось разрешить;
+- `runtime_error`: непредвиденная ошибка runtime.
+
+Почему выбран такой подход:
+
+- preflight не меняет config schema и не меняет `history-run`;
+- unauthorized Telegram session теперь видна как диагностический статус, а не как длинный failed backfill;
+- отсутствие `TELEGRAM_SESSION_FILE`, `TELEGRAM_API_ID` или `TELEGRAM_API_HASH` остаётся config error на этапе загрузки config, потому что без этих значений collector невозможно создать корректно;
+- diagnostic JSON лежит рядом с raw artifacts и может быть прочитан OpenClaw или внешним агентом без знания внутренней логики Telethon.
+
+Следующий практический шаг:
+
+- с реальными Telegram credentials сначала запустить `doctor-telegram-mtproto`;
+- только если status равен `ready`, запускать `history-run`;
+- если status равен `unauthorized_session`, выполнить одноразовый login для указанного session file и повторить doctor command.

@@ -979,6 +979,74 @@ def test_telegram_mtproto_search_discovery_filters_posts_and_comments(monkeypatc
     ]
 
 
+def test_telegram_mtproto_diagnose_session_reports_unauthorized_warning(monkeypatch) -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+
+    def raise_unauthorized():  # noqa: ANN202
+        from social_posts_analysis.collectors.base import CollectorUnavailableError
+
+        raise CollectorUnavailableError(
+            "Telegram MTProto session is not authorized. Log in once with the configured session file."
+        )
+
+    monkeypatch.setattr(collector, "_open_client", raise_unauthorized)
+
+    diagnostic = collector.diagnose_session()
+
+    assert diagnostic["collector"] == "telegram_mtproto"
+    assert diagnostic["target_source"] == "example_channel"
+    assert diagnostic["status"] == "unauthorized_session"
+    assert diagnostic["session_file"].endswith(".sessions\\example") or diagnostic["session_file"].endswith(
+        ".sessions/example"
+    )
+    assert diagnostic["api_id_present"] is True
+    assert diagnostic["api_hash_present"] is True
+    assert diagnostic["source_state"]["authorized"] is False
+    assert "not authorized" in diagnostic["warnings"][0].lower()
+
+
+def test_telegram_mtproto_diagnose_session_reports_ready_source(monkeypatch) -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+    source_entity = SimpleNamespace(id=1001, title="Example Channel", username="example_channel", broadcast=True)
+    oldest_message = FakeMessage(
+        id=2,
+        date=datetime(2020, 1, 2, 10, 0, tzinfo=UTC),
+        message="Oldest visible post",
+    )
+
+    class FakeClient:
+        def disconnect(self) -> None:
+            return None
+
+        def iter_messages(self, source, limit=None, reverse=None):  # noqa: ANN001, ANN002, ANN003, ANN202
+            assert source == source_entity
+            assert limit == 25
+            assert reverse is True
+            return [oldest_message]
+
+    monkeypatch.setattr(collector, "_open_client", lambda: FakeClient())
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+    monkeypatch.setattr(collector, "_resolve_discussion_entity", lambda client, source: None)
+
+    diagnostic = collector.diagnose_session()
+
+    assert diagnostic["status"] == "ready"
+    assert diagnostic["source_state"] == {
+        "client_connected": True,
+        "authorized": True,
+        "source_resolved": True,
+        "oldest_message_detected": True,
+        "linked_discussion_detected": False,
+    }
+    assert diagnostic["source"] == {
+        "source_id": "example_channel",
+        "source_name": "Example Channel",
+        "source_url": "https://t.me/example_channel",
+        "source_type": "channel",
+    }
+    assert diagnostic["oldest_message_at"] == "2020-01-02T10:00:00+00:00"
+
+
 def test_telegram_web_search_discovery_resolves_public_handles_and_search_urls() -> None:
     collector = TelegramWebCollector(_telegram_web_config())
 

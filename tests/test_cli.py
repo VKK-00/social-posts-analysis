@@ -108,6 +108,85 @@ paths:
     assert "Instagram web diagnostic written" in result.output
 
 
+def test_doctor_telegram_mtproto_writes_diagnostic_json(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "project.yaml"
+    config_path.write_text(
+        """
+project_name: telegram-doctor-cli-test
+source:
+  platform: telegram
+  source_name: example_channel
+sides:
+  - side_id: side_a
+    name: Actor A
+collector:
+  mode: mtproto
+  telegram_mtproto:
+    enabled: true
+    session_file: .sessions/example
+    api_id: 12345
+    api_hash: hash
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  review_dir: review
+  reports_dir: reports
+  database_path: data/processed/social_posts_analysis.duckdb
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class FakeTelegramMtprotoCollector:
+        def __init__(self, config: Any) -> None:
+            self.config = config
+
+        def diagnose_session(self, target_source: str | None = None) -> dict[str, Any]:
+            return {
+                "collector": "telegram_mtproto",
+                "target_source": target_source or "example_channel",
+                "session_file": ".sessions/example",
+                "api_id_present": True,
+                "api_hash_present": True,
+                "status": "unauthorized_session",
+                "source_state": {
+                    "client_connected": False,
+                    "authorized": False,
+                    "source_resolved": False,
+                    "oldest_message_detected": False,
+                    "linked_discussion_detected": False,
+                },
+                "source": {},
+                "oldest_message_at": None,
+                "warnings": ["Telegram MTProto session is not authorized."],
+            }
+
+    monkeypatch.setattr(cli, "TelegramMtprotoCollector", FakeTelegramMtprotoCollector, raising=False)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "doctor-telegram-mtproto",
+            "--config",
+            str(config_path),
+            "--target-source",
+            "example_channel",
+            "--run-id",
+            "telegram-doctor-run-1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    diagnostic_path = project_root / "data/raw/_diagnostics/telegram-doctor-run-1/telegram_mtproto_session.json"
+    payload = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "unauthorized_session"
+    assert payload["target_source"] == "example_channel"
+    assert payload["source_state"]["authorized"] is False
+    assert "Telegram MTProto diagnostic written" in result.output
+
+
 def test_openclaw_export_writes_bundle_json(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     config_dir = project_root / "config"

@@ -8,6 +8,7 @@ import typer
 
 from .analysis.service import AnalysisService
 from .collectors.instagram_web import InstagramWebCollector
+from .collectors.telegram_mtproto import TelegramMtprotoCollector
 from .config import ProjectConfig, load_config
 from .history import HistoricalBackfillService, HistoryAnalysisService, HistoryReportService
 from .normalize import NormalizationService
@@ -94,6 +95,29 @@ def doctor_instagram_web(
     )
     typer.echo(f"Instagram web diagnostic written: {diagnostic_path}")
     typer.echo(f"Instagram web diagnostic status: {diagnostic['status']}")
+    for warning in diagnostic.get("warnings") or []:
+        typer.echo(f"Warning: {warning}", err=True)
+
+
+@app.command("doctor-telegram-mtproto")
+def doctor_telegram_mtproto(
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    target_source: Optional[str] = typer.Option(None, "--target-source"),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    _, paths, config = _load_project(config_path)
+    resolved_run_id = run_id or make_run_id()
+    collector = TelegramMtprotoCollector(config)
+    diagnostic = collector.diagnose_session(target_source)
+    diagnostic_dir = paths.raw_root / "_diagnostics" / resolved_run_id
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    diagnostic_path = diagnostic_dir / "telegram_mtproto_session.json"
+    diagnostic_path.write_text(
+        json.dumps(diagnostic, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(f"Telegram MTProto diagnostic written: {diagnostic_path}")
+    typer.echo(f"Telegram MTProto diagnostic status: {diagnostic['status']}")
     for warning in diagnostic.get("warnings") or []:
         typer.echo(f"Warning: {warning}", err=True)
 

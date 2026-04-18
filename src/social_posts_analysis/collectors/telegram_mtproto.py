@@ -214,6 +214,85 @@ class TelegramMtprotoCollector(BaseCollector):
             if callable(disconnect):
                 disconnect()
 
+    def diagnose_session(self, target_source: str | None = None) -> dict[str, Any]:
+        resolved_target_source = target_source or self._source_reference()
+        warnings: list[str] = []
+        source_state = {
+            "client_connected": False,
+            "authorized": False,
+            "source_resolved": False,
+            "oldest_message_detected": False,
+            "linked_discussion_detected": False,
+        }
+        diagnostic: dict[str, Any] = {
+            "collector": self.name,
+            "target_source": resolved_target_source,
+            "session_file": str(Path(self.settings.session_file or "").expanduser()),
+            "api_id_present": self.settings.api_id is not None,
+            "api_hash_present": bool(self.settings.api_hash),
+            "status": "runtime_error",
+            "source_state": source_state,
+            "source": {},
+            "oldest_message_at": None,
+            "warnings": warnings,
+        }
+        client: Any | None = None
+        try:
+            client = self._open_client()
+            source_state["client_connected"] = True
+            source_state["authorized"] = True
+            source_entity = self._resolve_diagnostic_source_entity(client, resolved_target_source, explicit=target_source is not None)
+            source_state["source_resolved"] = True
+            diagnostic["source"] = self._entity_surface_payload(source_entity)
+            oldest_message_at = self._oldest_visible_message_datetime(client, source_entity)
+            if oldest_message_at:
+                source_state["oldest_message_detected"] = True
+                diagnostic["oldest_message_at"] = oldest_message_at
+            discussion_entity = self._resolve_discussion_entity(client, source_entity)
+            if discussion_entity is None:
+                warnings.append("Telegram channel has no linked discussion chat; history smoke will collect posts only.")
+            else:
+                source_state["linked_discussion_detected"] = True
+            diagnostic["status"] = "ready"
+        except CollectorUnavailableError as exc:
+            message = str(exc)
+            warnings.append(message)
+            lowered = message.lower()
+            if "not authorized" in lowered:
+                diagnostic["status"] = "unauthorized_session"
+            elif "unable to resolve" in lowered:
+                diagnostic["status"] = "source_unavailable"
+            else:
+                diagnostic["status"] = "runtime_error"
+        except Exception as exc:  # pragma: no cover - defensive network surface
+            warnings.append(f"Telegram MTProto diagnostic failed: {exc}")
+            diagnostic["status"] = "runtime_error"
+        finally:
+            if client is not None:
+                disconnect = getattr(client, "disconnect", None)
+                if callable(disconnect):
+                    disconnect()
+        return diagnostic
+
+    def _resolve_diagnostic_source_entity(self, client: Any, target_source: str, *, explicit: bool) -> Any:
+        if not explicit:
+            return self._resolve_source_entity(client)
+        try:
+            return client.get_entity(target_source)
+        except Exception as exc:
+            raise CollectorUnavailableError(f"Unable to resolve Telegram source '{target_source}': {exc}") from exc
+
+    def _oldest_visible_message_datetime(self, client: Any, source_entity: Any) -> str | None:
+        try:
+            messages = list(client.iter_messages(source_entity, limit=25, reverse=True))
+        except Exception as exc:  # pragma: no cover - defensive network surface
+            raise CollectorUnavailableError(f"Unable to read Telegram source messages: {exc}") from exc
+        for message in messages:
+            if self._is_service_message(message):
+                continue
+            return self._iso_datetime(self._message_datetime(message))
+        return None
+
     def _iter_person_monitor_search_messages(
         self,
         client: Any,
