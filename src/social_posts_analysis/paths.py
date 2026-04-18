@@ -8,7 +8,10 @@ from .config import ProjectConfig
 
 def project_root_for_config(config_path: str | Path) -> Path:
     resolved = Path(config_path).resolve()
-    return resolved.parent.parent if resolved.parent.name == "config" else resolved.parent
+    for parent in resolved.parents:
+        if parent.name == "config":
+            return parent.parent
+    return resolved.parent
 
 
 def resolve_project_path(root: Path, value: str | Path) -> Path:
@@ -18,7 +21,7 @@ def resolve_project_path(root: Path, value: str | Path) -> Path:
 
 def relative_output_paths_warning(config_path: str | Path, config: ProjectConfig) -> str | None:
     resolved_config_path = Path(config_path).resolve()
-    if resolved_config_path.parent.name == "config":
+    if any(parent.name == "config" for parent in resolved_config_path.parents):
         return None
 
     relative_fields = [

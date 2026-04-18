@@ -515,6 +515,19 @@ history:
 
 In v1, the production-quality historical collector target is `telegram_mtproto`. For Telegram MTProto, `history.start: null` means the collector tries to discover the oldest accessible source message and starts from that month. For web collectors, set `history.start` explicitly; if it is missing, `history-run` fails before collection because deep web history is not stable yet.
 
+Reusable Telegram MTProto smoke config:
+
+```powershell
+$env:TELEGRAM_SESSION_FILE=".sessions/smoke"
+$env:TELEGRAM_API_ID="123456"
+$env:TELEGRAM_API_HASH="your-api-hash"
+social-posts-analysis history-run --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
+social-posts-analysis history-report --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
+social-posts-analysis openclaw-export --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
+```
+
+The smoke template writes to `data/smoke/`, `reports/smoke/`, and `review/smoke/` so it does not mix with normal run outputs. It uses the public Telegram source `durov`, three monthly windows, `max_items_per_window: 100`, and `max_comments_per_post: 200`. The file intentionally does not store MTProto credentials; they come from `TELEGRAM_SESSION_FILE`, `TELEGRAM_API_ID`, and `TELEGRAM_API_HASH`.
+
 `history-report` runs the historical analysis step and writes:
 
 - `reports/history/<history_run_id>/history_report.md`
@@ -669,6 +682,7 @@ The current test suite covers:
 - analysis helpers and support metrics
 - review override application
 - historical monthly windows, resume behavior, temporal tables, history reports, and OpenClaw history bundles
+- smoke config loading for nested files under `config/smoke/`
 
 ## CI
 

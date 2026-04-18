@@ -1,0 +1,76 @@
+project_name: telegram_mtproto_history_smoke
+
+source:
+  platform: telegram
+  source_name: durov
+  telegram:
+    discussion_chat_id: null
+
+collector:
+  mode: mtproto
+  meta_api:
+    enabled: false
+  public_web:
+    enabled: false
+  telegram_web:
+    enabled: false
+  telegram_mtproto:
+    enabled: true
+    page_size: 100
+    timeout_seconds: 30
+    max_retries: 3
+  telegram_bot_api:
+    enabled: false
+  x_api:
+    enabled: false
+    bearer_token: null
+  x_web:
+    enabled: false
+  threads_api:
+    enabled: false
+    access_token: null
+  threads_web:
+    enabled: false
+  instagram_graph_api:
+    enabled: false
+    access_token: null
+  instagram_web:
+    enabled: false
+
+history:
+  start: "2026-01-01"
+  end: "2026-03-31"
+  window: month
+  max_windows: 3
+  max_items_per_window: 100
+  max_comments_per_post: 200
+  resume: true
+  stop_on_error: false
+
+sides:
+  - side_id: pavel_durov
+    name: Pavel Durov
+    aliases:
+      - Durov
+      - Telegram
+    support_keywords:
+      - support Durov
+      - support Telegram
+    oppose_keywords:
+      - oppose Durov
+      - against Telegram
+
+providers:
+  embeddings:
+    kind: auto
+    dimension: 256
+  llm:
+    kind: auto
+    temperature: 0
+
+paths:
+  raw_dir: data/smoke/raw
+  processed_dir: data/smoke/processed
+  review_dir: review/smoke
+  reports_dir: reports/smoke
+  database_path: data/smoke/processed/social_posts_analysis.duckdb

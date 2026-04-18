@@ -1611,3 +1611,49 @@ Turning-point logic:
 - live smoke на Telegram MTProto public channel за 2-3 месяца;
 - добавить reusable smoke config для короткого history run;
 - после Telegram smoke решать, какие web surfaces можно честно включить как limited history collectors.
+
+## Обновление: reusable Telegram MTProto history smoke config
+
+Добавлен воспроизводимый smoke-конфиг для короткого historical run на Telegram MTProto:
+
+- [config/smoke/telegram_mtproto_history.yaml](C:\Coding projects\facebook_posts_analysis\config\smoke\telegram_mtproto_history.yaml)
+  Готовый пример для `history-run` по публичному Telegram source `durov`.
+- [src/social_posts_analysis/paths.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\paths.py)
+  `project_root_for_config(...)` и `relative_output_paths_warning(...)` теперь корректно понимают вложенные конфиги внутри `config/`, например `config/smoke/*.yaml`.
+- [tests/test_smoke_configs.py](C:\Coding projects\facebook_posts_analysis\tests\test_smoke_configs.py)
+  Проверяет, что smoke-конфиг загружается, использует Telegram MTProto и пишет outputs в smoke-директории.
+- [tests/test_paths.py](C:\Coding projects\facebook_posts_analysis\tests\test_paths.py)
+  Проверяет вычисление project root и отсутствие ложного warning для вложенных config-файлов.
+
+Почему это нужно:
+
+- до этого конфиг в `config/project.yaml` вычислял project root как родителя директории `config`;
+- для файла `config/smoke/telegram_mtproto_history.yaml` старое правило ошибочно считало project root равным `config/smoke`;
+- из-за этого относительные output paths вроде `data/smoke/raw` могли бы резолвиться не от корня репозитория, а от вложенной директории;
+- новый алгоритм поднимается по parent directories до ближайшей директории с именем `config` и берёт её parent как project root.
+
+Как устроен smoke-конфиг:
+
+- source: Telegram public source `durov`;
+- collector: `telegram_mtproto`;
+- history window: месяц;
+- период: январь-март 2026 для короткого запуска;
+- лимиты: `max_items_per_window: 100`, `max_comments_per_post: 200`;
+- outputs: `data/smoke/`, `reports/smoke/`, `review/smoke/`;
+- MTProto credentials не хранятся в репозитории, а приходят из env vars `TELEGRAM_SESSION_FILE`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`.
+
+Команды для manual smoke:
+
+```powershell
+$env:TELEGRAM_SESSION_FILE=".sessions/smoke"
+$env:TELEGRAM_API_ID="123456"
+$env:TELEGRAM_API_HASH="your-api-hash"
+social-posts-analysis history-run --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
+social-posts-analysis history-report --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
+social-posts-analysis openclaw-export --config config/smoke/telegram_mtproto_history.yaml --history-run-id smoke-telegram-history
+```
+
+Что пока не проверялось:
+
+- live MTProto smoke не запускался в этом batch, потому что для него нужна валидная Telegram session и реальные API credentials;
+- текущий batch проверяет, что reusable config корректно грузится, валидируется и резолвит output paths от корня проекта.

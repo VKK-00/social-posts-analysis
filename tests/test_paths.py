@@ -16,6 +16,16 @@ def test_project_root_for_config_uses_parent_parent_for_config_directory(tmp_pat
     assert project_root_for_config(config_path) == project_root.resolve()
 
 
+def test_project_root_for_config_supports_nested_config_directory(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config" / "smoke"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "telegram_mtproto_history.yaml"
+    config_path.write_text("project_name: test\n", encoding="utf-8")
+
+    assert project_root_for_config(config_path) == project_root.resolve()
+
+
 def test_project_root_for_config_uses_config_parent_when_config_is_outside_project_config_dir(tmp_path: Path) -> None:
     config_dir = tmp_path / "temp-configs"
     config_dir.mkdir(parents=True)
@@ -88,6 +98,22 @@ def test_relative_output_paths_warning_is_none_for_config_directory(tmp_path: Pa
     config_dir = project_root / "config"
     config_dir.mkdir(parents=True)
     config_path = config_dir / "project.local.yaml"
+    config_path.write_text("project_name: test\n", encoding="utf-8")
+    config = ProjectConfig.model_validate(
+        {
+            "source": {"platform": "facebook", "url": "https://www.facebook.com/example"},
+            "sides": [{"side_id": "a", "name": "A"}],
+        }
+    )
+
+    assert relative_output_paths_warning(config_path, config) is None
+
+
+def test_relative_output_paths_warning_is_none_for_nested_config_directory(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_dir = project_root / "config" / "smoke"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "telegram_mtproto_history.yaml"
     config_path.write_text("project_name: test\n", encoding="utf-8")
     config = ProjectConfig.model_validate(
         {
