@@ -1,4 +1,4 @@
-name: tmp-psh10-research
+name: tmp-psh10-editions
 on:
   push:
     branches: [tmp/psh10-research-20260805]
@@ -7,68 +7,79 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Download official Rada datasets and target records
+      - name: Fetch every official edition and linked list file
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p out
-          python - <<'PY'
-          import io, json, re, zipfile
+          python -m pip install --quiet requests beautifulsoup4 lxml
+          mkdir -p out/html out/files
+          cat > /tmp/fetch_editions.py <<'PY'
+          import json, re, time
           from pathlib import Path
-          from urllib.request import Request, urlopen
-          out=Path('out')
-          targets=['z0453-22','z1668-22','z0380-25','1364-2022-п']
-          report={}
-          for name in ['doc-update','doc-dates','doc','ist']:
-              url=f'https://data.rada.gov.ua/ogd/zak/laws/data/csv/{name}.zip'
+          from urllib.parse import urljoin
+          import requests
+          from bs4 import BeautifulSoup
+
+          OUT=Path('out'); (OUT/'html').mkdir(parents=True,exist_ok=True); (OUT/'files').mkdir(parents=True,exist_ok=True)
+          editions={
+            'z0453-22':['20220425','20220429','20220503','20220510','20220513','20220517','20220524','20220527','20220531','20220603','20220610','20220617','20220621','20220624','20220629','20220701','20220708','20220715','20220722','20220729','20220819','20220830','20220920','20220930','20221021','20221104','20221125','20221202','20221220','20221227'],
+            'z1668-22':['20221222','20230127','20230217','20230227','20230310','20230502','20230519','20230607','20230721','20230825','20230929','20231127','20240125','20240222','20240227','20240315','20240321','20240326','20240419','20240507','20240605','20240716','20240726','20240808','20240822','20240913','20240925','20241002','20241017','20241025','20241030','20241129','20241217','20241227','20250320'],
+            'z0380-25':['20250228','20250429','20250507','20250704','20250725','20250812','20250829','20250919','20251212','20251219','20251223','20260130','20260210','20260303','20260331','20260407','20260605','20260624']
+          }
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,en;q=0.7','Accept-Encoding':'gzip, deflate'})
+          meta=[]
+          for nreg, dates in editions.items():
+            for ed in dates:
+              key=f'{nreg}_{ed}'
+              url=f'https://zakon.rada.gov.ua/laws/show/{nreg}/ed{ed}/print'
+              item={'nreg':nreg,'edition':ed,'url':url}
               try:
-                  req=Request(url,headers={'User-Agent':'Mozilla/5.0'})
-                  data=urlopen(req,timeout=180).read()
-                  (out/f'{name}.zip').write_bytes(data)
-                  z=zipfile.ZipFile(io.BytesIO(data))
-                  info={'url':url,'zip_bytes':len(data),'members':z.namelist(),'hits':{}}
-                  for member in z.namelist():
-                      raw=z.read(member)
-                      (out/f'{name}__{Path(member).name}').write_bytes(raw)
-                      text=None
-                      for enc in ['utf-8-sig','utf-8','cp1251']:
-                          try:
-                              text=raw.decode(enc); break
-                          except UnicodeDecodeError: pass
-                      if text is None: text=raw.decode('utf-8',errors='replace')
-                      (out/f'{name}__{Path(member).name}.utf8.txt').write_text(text,encoding='utf-8')
-                      for t in targets:
-                          hits=[ln for ln in text.splitlines() if t.lower() in ln.lower()]
-                          if hits: info['hits'][t]=hits
-                  report[name]=info
+                r=s.get(url,timeout=180,allow_redirects=True); item.update(status=r.status_code,bytes=len(r.content),content_type=r.headers.get('content-type'),final_url=r.url)
+                r.raise_for_status(); html=r.content; (OUT/'html'/f'{key}.html').write_bytes(html)
+                soup=BeautifulSoup(html,'lxml'); text=soup.get_text('\n',strip=True); (OUT/'html'/f'{key}.txt').write_text(text,encoding='utf-8')
+                item['title']=soup.title.get_text(' ',strip=True) if soup.title else ''
+                item['table_count']=len(soup.find_all('table')); item['row_count']=len(soup.find_all('tr'))
+                links=[]
+                for a in soup.find_all('a',href=True):
+                  href=urljoin(r.url,a['href']); label=a.get_text(' ',strip=True)
+                  if '/laws/file/text/' in href:
+                    links.append({'label':label,'href':href})
+                item['file_links']=links
+                # Prefer DOCX; retain ZIP/PDF/DOC when DOCX absent.
+                candidates=[]
+                seen=set()
+                for x in links:
+                  href=x['href'].split('?')[0]
+                  if href in seen: continue
+                  seen.add(href)
+                  if re.search(r'\.(docx|doc|pdf|zip)$',href,re.I): candidates.append(href)
+                preferred=[u for u in candidates if u.lower().endswith('.docx')] or [u for u in candidates if u.lower().endswith('.zip')] or candidates
+                if preferred:
+                  furl=preferred[0]; fr=s.get(furl,timeout=240,allow_redirects=True); fr.raise_for_status()
+                  ext=Path(furl).suffix or '.bin'; fp=OUT/'files'/f'{key}{ext.lower()}'; fp.write_bytes(fr.content)
+                  item['downloaded_file']={'url':furl,'path':str(fp),'bytes':len(fr.content),'content_type':fr.headers.get('content-type'),'final_url':fr.url}
               except Exception as e:
-                  report[name]={'url':url,'error':repr(e)}
-          (out/'dataset_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-          # Fetch card/history/print pages for target acts; raw HTML is retained for link discovery.
-          pages=[]
-          for nreg in targets[:3]:
-              for suffix in ['', '/card3','/card4','/print']:
-                  url=f'https://zakon.rada.gov.ua/laws/show/{nreg}{suffix}'
-                  key=f'{nreg}_{suffix.strip("/") or "text"}'
-                  try:
-                      req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept-Language':'uk-UA,uk;q=0.9'})
-                      r=urlopen(req,timeout=240)
-                      body=r.read()
-                      (out/f'{key}.html').write_bytes(body)
-                      pages.append({'key':key,'url':url,'status':getattr(r,'status',200),'bytes':len(body),'final_url':r.geturl(),'content_type':r.headers.get('content-type')})
-                  except Exception as e:
-                      pages.append({'key':key,'url':url,'error':repr(e)})
-          (out/'page_report.json').write_text(json.dumps(pages,ensure_ascii=False,indent=2),encoding='utf-8')
-          print(json.dumps({'datasets':{k:{'error':v.get('error'),'zip_bytes':v.get('zip_bytes'),'hits':list(v.get('hits',{}))} for k,v in report.items()},'pages':pages},ensure_ascii=False,indent=2))
+                item['error']=repr(e)
+              meta.append(item); print(json.dumps(item,ensure_ascii=False)); time.sleep(0.15)
+          (OUT/'editions.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2),encoding='utf-8')
+          print('files',len(list((OUT/'html').iterdir())),len(list((OUT/'files').iterdir())))
           PY
+          python /tmp/fetch_editions.py
           du -sh out
-          find out -maxdepth 1 -type f -printf '%f %s\n' | sort
-      - name: Upload source package
+          python - <<'PY'
+          import json
+          a=json.load(open('out/editions.json'))
+          print('TOTAL',len(a),'ERRORS',sum('error' in x for x in a),'FILES',sum('downloaded_file' in x for x in a))
+          for x in a:
+            if 'error' in x: print('ERROR',x)
+          PY
+      - name: Upload editions
         uses: actions/upload-artifact@v4
         with:
-          name: psh10-rada-source-package
+          name: psh10-rada-all-editions
           path: out/
           if-no-files-found: error
+          compression-level: 9
           retention-days: 1
