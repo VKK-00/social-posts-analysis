@@ -1,0 +1,74 @@
+name: tmp-psh10-research
+on:
+  push:
+    branches: [tmp/psh10-research-20260805]
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download official Rada datasets and target records
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          import io, json, re, zipfile
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          out=Path('out')
+          targets=['z0453-22','z1668-22','z0380-25','1364-2022-п']
+          report={}
+          for name in ['doc-update','doc-dates','doc','ist']:
+              url=f'https://data.rada.gov.ua/ogd/zak/laws/data/csv/{name}.zip'
+              try:
+                  req=Request(url,headers={'User-Agent':'Mozilla/5.0'})
+                  data=urlopen(req,timeout=180).read()
+                  (out/f'{name}.zip').write_bytes(data)
+                  z=zipfile.ZipFile(io.BytesIO(data))
+                  info={'url':url,'zip_bytes':len(data),'members':z.namelist(),'hits':{}}
+                  for member in z.namelist():
+                      raw=z.read(member)
+                      (out/f'{name}__{Path(member).name}').write_bytes(raw)
+                      text=None
+                      for enc in ['utf-8-sig','utf-8','cp1251']:
+                          try:
+                              text=raw.decode(enc); break
+                          except UnicodeDecodeError: pass
+                      if text is None: text=raw.decode('utf-8',errors='replace')
+                      (out/f'{name}__{Path(member).name}.utf8.txt').write_text(text,encoding='utf-8')
+                      for t in targets:
+                          hits=[ln for ln in text.splitlines() if t.lower() in ln.lower()]
+                          if hits: info['hits'][t]=hits
+                  report[name]=info
+              except Exception as e:
+                  report[name]={'url':url,'error':repr(e)}
+          (out/'dataset_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+          # Fetch card/history/print pages for target acts; raw HTML is retained for link discovery.
+          pages=[]
+          for nreg in targets[:3]:
+              for suffix in ['', '/card3','/card4','/print']:
+                  url=f'https://zakon.rada.gov.ua/laws/show/{nreg}{suffix}'
+                  key=f'{nreg}_{suffix.strip("/") or "text"}'
+                  try:
+                      req=Request(url,headers={'User-Agent':'Mozilla/5.0','Accept-Language':'uk-UA,uk;q=0.9'})
+                      r=urlopen(req,timeout=240)
+                      body=r.read()
+                      (out/f'{key}.html').write_bytes(body)
+                      pages.append({'key':key,'url':url,'status':getattr(r,'status',200),'bytes':len(body),'final_url':r.geturl(),'content_type':r.headers.get('content-type')})
+                  except Exception as e:
+                      pages.append({'key':key,'url':url,'error':repr(e)})
+          (out/'page_report.json').write_text(json.dumps(pages,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps({'datasets':{k:{'error':v.get('error'),'zip_bytes':v.get('zip_bytes'),'hits':list(v.get('hits',{}))} for k,v in report.items()},'pages':pages},ensure_ascii=False,indent=2))
+          PY
+          du -sh out
+          find out -maxdepth 1 -type f -printf '%f %s\n' | sort
+      - name: Upload source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: psh10-rada-source-package
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
