@@ -2,86 +2,29 @@ from __future__ import annotations
 
 from typing import Any
 
-from social_posts_analysis.config import ProjectConfig
-from social_posts_analysis.contracts import (
-    AuthorSnapshot,
-    CollectionManifest,
-    CommentSnapshot,
-    PostSnapshot,
-    SourceSnapshot,
-)
+from social_posts_analysis.contracts import AuthorSnapshot, CommentSnapshot, PostSnapshot
 from social_posts_analysis.raw_store import RawSnapshotStore
-from social_posts_analysis.utils import parse_compact_number, slugify, utc_now_iso
+from social_posts_analysis.utils import parse_compact_number, slugify
 
-from .base import BaseCollector, CollectorUnavailableError
-from .range_utils import RangeFilter
-from .web_runtime import WebCollectorRuntime, ensure_playwright_available, open_web_runtime, scroll_page
+from .base import CollectorUnavailableError
+from .web_timeline_base import WebTimelineCollector
 
 
-class InstagramWebCollector(BaseCollector):
+class InstagramWebCollector(WebTimelineCollector):
     name = "instagram_web"
+    platform = "instagram"
+    wheel_y = 2400
+    min_detail_scroll_passes = 2
+    allow_missing_created_at = True
+    profile_copy_prefix = "instagram-web-profile-"
+    disabled_error_message = "Instagram web collector is disabled in config.collector.instagram_web.enabled."
+    requirements_error_message = "Instagram web collector requires the playwright package and browser install."
+    custom_user_data_error = (
+        "Instagram authenticated browser mode requires collector.instagram_web.authenticated_browser.user_data_dir."
+    )
 
-    def __init__(self, config: ProjectConfig) -> None:
-        self.config = config
-        self.settings = config.collector.instagram_web
-        self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
-        if not self.settings.enabled:
-            raise CollectorUnavailableError(
-                "Instagram web collector is disabled in config.collector.instagram_web.enabled."
-            )
-        ensure_playwright_available("Instagram web collector requires the playwright package and browser install.")
-
-    def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
-        from playwright.sync_api import sync_playwright
-
-        warnings = [
-            "Instagram web extraction is best-effort and public comment visibility depends on the current web UI."
-        ]
-        profile_url = self._resolve_profile_url()
-        with sync_playwright() as playwright:
-            runtime = self._open_collection_context(playwright)
-            warnings.extend(runtime.warnings)
-            try:
-                page = runtime.context.new_page()
-                page.goto(profile_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
-                self._scroll_timeline(page)
-                payload = self._extract_profile_payload(page)
-                source_path = raw_store.write_json("instagram_web_source", "profile_feed", payload)
-                source_name = payload.get("source_name") or self.config.source.source_name or self._source_reference()
-                source_id = payload.get("source_id") or self._source_reference()
-                posts = self._build_posts_from_payload(
-                    payload, source_id=source_id, source_name=source_name, raw_store=raw_store
-                )
-                updated_posts: list[PostSnapshot] = []
-                for post in posts:
-                    comments = self._collect_comments_for_post(context=runtime.context, post=post, raw_store=raw_store)
-                    updated_posts.append(
-                        post.model_copy(
-                            update={"comments": comments, "comments_count": max(post.comments_count, len(comments))}
-                        )
-                    )
-            finally:
-                runtime.close()
-
-        source_snapshot = SourceSnapshot(
-            platform="instagram",
-            source_id=source_id,
-            source_name=source_name,
-            source_url=profile_url,
-            source_type="account",
-            source_collector=self.name,
-            raw_path=str(source_path),
-        )
-        return CollectionManifest(
-            run_id=run_id,
-            collected_at=utc_now_iso(),
-            collector=self.name,
-            mode=self.config.collector.mode,
-            status="partial" if warnings else "success",
-            warnings=warnings,
-            source=source_snapshot,
-            posts=updated_posts,
-        )
+    def _initial_warning(self) -> str:
+        return "Instagram web extraction is best-effort and public comment visibility depends on the current web UI."
 
     def _build_posts_from_payload(
         self,
@@ -128,14 +71,8 @@ class InstagramWebCollector(BaseCollector):
     ) -> list[CommentSnapshot]:
         if not post.permalink:
             return []
-        page = context.new_page()
-        try:
-            page.goto(post.permalink, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
-            self._scroll_timeline(page, passes=max(2, self.settings.max_scrolls // 2))
-            payload = self._extract_post_payload(page)
-            raw_store.write_json("instagram_web_comments", slugify(post.post_id), payload)
-        finally:
-            page.close()
+        payload = self._fetch_detail_payload(context=context, post=post)
+        raw_store.write_json("instagram_web_comments", slugify(post.post_id), payload)
         comments: list[CommentSnapshot] = []
         comment_id_map: dict[str, str] = {}
         depth_map: dict[str, int] = {}
@@ -177,6 +114,33 @@ class InstagramWebCollector(BaseCollector):
             depth_map[snapshot.comment_id] = snapshot.depth
         return comments
 
+    def _extract_detail_payload(self, page: Any) -> dict[str, Any]:
+        return self._extract_post_payload(page)
+
+    def _extract_post_payload(self, page: Any) -> dict[str, Any]:
+        return page.evaluate(
+            """
+            () => {
+              const commentNodes = Array.from(document.querySelectorAll('ul ul, article ul ul li'));
+              const comments = commentNodes.map((node, index) => {
+                const authorLink = node.querySelector('a[href^="/"]');
+                const timeNode = node.querySelector('time');
+                const textParts = Array.from(node.querySelectorAll('span')).map((span) => (span.textContent || '').trim()).filter(Boolean);
+                return {
+                  comment_id: node.getAttribute('data-comment-id') || String(index + 1),
+                  reply_to_comment_id: node.getAttribute('data-parent-comment-id') || '',
+                  created_at: timeNode?.getAttribute('datetime') || null,
+                  text: textParts.slice(1).join(' ').trim(),
+                  author_name: textParts[0] || '',
+                  author_username: authorLink ? (authorLink.getAttribute('href') || '').replaceAll('/', '') : '',
+                  like_count: '',
+                };
+              });
+              return { comments };
+            }
+            """
+        )
+
     def _extract_profile_payload(self, page: Any) -> dict[str, Any]:
         return page.evaluate(
             """
@@ -213,50 +177,6 @@ class InstagramWebCollector(BaseCollector):
             """
         )
 
-    def _extract_post_payload(self, page: Any) -> dict[str, Any]:
-        return page.evaluate(
-            """
-            () => {
-              const commentNodes = Array.from(document.querySelectorAll('ul ul, article ul ul li'));
-              const comments = commentNodes.map((node, index) => {
-                const authorLink = node.querySelector('a[href^="/"]');
-                const timeNode = node.querySelector('time');
-                const textParts = Array.from(node.querySelectorAll('span')).map((span) => (span.textContent || '').trim()).filter(Boolean);
-                return {
-                  comment_id: node.getAttribute('data-comment-id') || String(index + 1),
-                  reply_to_comment_id: node.getAttribute('data-parent-comment-id') || '',
-                  created_at: timeNode?.getAttribute('datetime') || null,
-                  text: textParts.slice(1).join(' ').trim(),
-                  author_name: textParts[0] || '',
-                  author_username: authorLink ? (authorLink.getAttribute('href') || '').replaceAll('/', '') : '',
-                  like_count: '',
-                };
-              });
-              return { comments };
-            }
-            """
-        )
-
-    def _open_collection_context(self, playwright: Any) -> WebCollectorRuntime:
-        return open_web_runtime(
-            playwright,
-            headless=self.settings.headless,
-            browser_channel=self.settings.browser_channel,
-            viewport={"width": 1400, "height": 1800},
-            authenticated_browser=self.settings.authenticated_browser,
-            profile_copy_prefix="instagram-web-profile-",
-            custom_user_data_error="Instagram authenticated browser mode requires collector.instagram_web.authenticated_browser.user_data_dir.",
-        )
-
-    def _scroll_timeline(self, page: Any, *, passes: int | None = None) -> None:
-        scroll_page(
-            page,
-            max_scrolls=self.settings.max_scrolls,
-            wait_after_scroll_ms=self.settings.wait_after_scroll_ms,
-            passes=passes,
-            wheel_y=2400,
-        )
-
     def _resolve_profile_url(self) -> str:
         if self.config.source.url:
             return self.config.source.url.rstrip("/")
@@ -272,9 +192,6 @@ class InstagramWebCollector(BaseCollector):
         raise CollectorUnavailableError(
             "Instagram web collector requires source.url, source.source_name, or source.source_id."
         )
-
-    def _within_range(self, raw_value: str | None) -> bool:
-        return self.range_filter.contains(raw_value, allow_missing=True)
 
 
 def profile_url_from_name(name: str) -> str:
