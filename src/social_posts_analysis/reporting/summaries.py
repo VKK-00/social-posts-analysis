@@ -151,7 +151,8 @@ def telegram_summary(posts: pl.DataFrame, comments: pl.DataFrame, collection_run
     }
 
 
-def x_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
+def engagement_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
+    """Shared engagement rollup for X and Threads (identical counter surfaces)."""
     return {
         "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
         "total_likes": int(posts["reactions"].fill_null(0).sum())
@@ -166,23 +167,14 @@ def x_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
         else 0,
         "reaction_breakdown": reaction_breakdown_summary(posts, comments),
     }
+
+
+def x_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
+    return engagement_summary(posts, comments)
 
 
 def threads_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
-    return {
-        "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-        "total_likes": int(posts["reactions"].fill_null(0).sum())
-        if "reactions" in posts.columns and posts.height
-        else 0,
-        "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
-        "total_quotes": int(posts["forwards"].fill_null(0).sum())
-        if "forwards" in posts.columns and posts.height
-        else 0,
-        "total_replies": int(posts["reply_count"].fill_null(0).sum())
-        if "reply_count" in posts.columns and posts.height
-        else 0,
-        "reaction_breakdown": reaction_breakdown_summary(posts, comments),
-    }
+    return engagement_summary(posts, comments)
 
 
 def instagram_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:

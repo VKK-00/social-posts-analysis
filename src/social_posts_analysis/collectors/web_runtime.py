@@ -36,6 +36,14 @@ class WebCollectorRuntime:
             self.browser.close()
         if self.temp_profile_dir is not None:
             shutil.rmtree(self.temp_profile_dir, ignore_errors=True)
+            # The temp copy contains real browser cookies and session data;
+            # if removal failed (locked files on Windows), surface it instead
+            # of silently leaving credentials in the temp directory.
+            if self.temp_profile_dir.exists():
+                self.warnings.append(
+                    "Temporary authenticated profile copy could not be fully removed; "
+                    "delete it manually to avoid leaving session data behind."
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,8 +116,10 @@ def open_authenticated_web_runtime(
         profile_directory=profile_directory,
     )
     failure_messages: list[str] = []
+    # Warn that a snapshot of the real profile is used, without leaking the
+    # absolute path to the user's browser data into manifests and reports.
     snapshot_warning = (
-        f"Using authenticated browser profile snapshot from {source_user_data_dir} ({profile_directory})."
+        f"Using authenticated browser profile snapshot (profile directory: {profile_directory})."
         if authenticated_browser.copy_profile
         else None
     )

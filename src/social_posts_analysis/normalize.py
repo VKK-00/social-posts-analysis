@@ -82,4 +82,6 @@ class NormalizationService:
             if isinstance(raw_source_run_ids, pl.Series)
             else list(raw_source_run_ids or [])
         )
-        return existing_source_run_ids == source_run_ids
+        # Order-independent comparison: the same set of source runs merged in
+        # a different order describes the same snapshot and should be reused.
+        return sorted(existing_source_run_ids) == sorted(source_run_ids)

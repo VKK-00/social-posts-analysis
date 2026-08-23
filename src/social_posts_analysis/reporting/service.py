@@ -30,6 +30,35 @@ from .summaries import (
 )
 
 
+def _apply_joined_override(
+    frame: pl.DataFrame,
+    *,
+    key_columns: list[str],
+    value_column: str,
+    updates: dict[tuple[Any, ...], Any],
+    dtype: Any,
+) -> pl.DataFrame:
+    """Apply manual overrides via a left join instead of per-row callbacks.
+
+    Rows whose composite key appears in ``updates`` take the override value;
+    all other rows keep their original value. Unmatched keys are ignored.
+    """
+    if not updates or frame.is_empty():
+        return frame
+    override_frame = pl.DataFrame(
+        {
+            **{column: [key[index] for key in updates] for index, column in enumerate(key_columns)},
+            "__override__": list(updates.values()),
+        },
+        schema_overrides={"__override__": dtype},
+    )
+    return (
+        frame.join(override_frame, on=key_columns, how="left")
+        .with_columns(pl.coalesce(["__override__", value_column]).alias(value_column))
+        .drop("__override__")
+    )
+
+
 class ReviewExportService:
     def __init__(self, config: ProjectConfig, paths: ProjectPaths) -> None:
         self.config = config
@@ -410,22 +439,22 @@ class ReportService:
                     new_description
                 )
 
+        # Overrides are applied as hash joins instead of row-wise Python
+        # callbacks, which keeps large membership tables fast.
         if mapping:
-            memberships = memberships.with_columns(
-                pl.struct(["item_type", "cluster_id"])
-                .map_elements(
-                    lambda row: mapping.get((row["item_type"], row["cluster_id"]), row["cluster_id"]),
-                    return_dtype=pl.String,
-                )
-                .alias("cluster_id")
+            clusters = _apply_joined_override(
+                clusters,
+                key_columns=["item_type", "cluster_id"],
+                value_column="cluster_id",
+                updates=mapping,
+                dtype=pl.String,
             )
-            clusters = clusters.with_columns(
-                pl.struct(["item_type", "cluster_id"])
-                .map_elements(
-                    lambda row: mapping.get((row["item_type"], row["cluster_id"]), row["cluster_id"]),
-                    return_dtype=pl.String,
-                )
-                .alias("cluster_id")
+            memberships = _apply_joined_override(
+                memberships,
+                key_columns=["item_type", "cluster_id"],
+                value_column="cluster_id",
+                updates=mapping,
+                dtype=pl.String,
             )
             clusters = clusters.group_by(["item_type", "cluster_id", "run_id"]).agg(
                 pl.col("label").first().alias("label"),
@@ -435,22 +464,20 @@ class ReportService:
             )
 
         if label_updates:
-            clusters = clusters.with_columns(
-                pl.struct(["item_type", "cluster_id", "label"])
-                .map_elements(
-                    lambda row: label_updates.get((row["item_type"], row["cluster_id"]), row["label"]),
-                    return_dtype=pl.String,
-                )
-                .alias("label")
+            clusters = _apply_joined_override(
+                clusters,
+                key_columns=["item_type", "cluster_id"],
+                value_column="label",
+                updates=label_updates,
+                dtype=pl.String,
             )
         if description_updates:
-            clusters = clusters.with_columns(
-                pl.struct(["item_type", "cluster_id", "description"])
-                .map_elements(
-                    lambda row: description_updates.get((row["item_type"], row["cluster_id"]), row["description"]),
-                    return_dtype=pl.String,
-                )
-                .alias("description")
+            clusters = _apply_joined_override(
+                clusters,
+                key_columns=["item_type", "cluster_id"],
+                value_column="description",
+                updates=description_updates,
+                dtype=pl.String,
             )
         return clusters, memberships
 
@@ -474,24 +501,20 @@ class ReportService:
                     continue
 
         if label_map:
-            stance_labels = stance_labels.with_columns(
-                pl.struct(["item_type", "item_id", "side_id", "label"])
-                .map_elements(
-                    lambda row: label_map.get((row["item_type"], row["item_id"], row["side_id"]), row["label"]),
-                    return_dtype=pl.String,
-                )
-                .alias("label")
+            stance_labels = _apply_joined_override(
+                stance_labels,
+                key_columns=["item_type", "item_id", "side_id"],
+                value_column="label",
+                updates=label_map,
+                dtype=pl.String,
             )
         if confidence_map:
-            stance_labels = stance_labels.with_columns(
-                pl.struct(["item_type", "item_id", "side_id", "confidence"])
-                .map_elements(
-                    lambda row: confidence_map.get(
-                        (row["item_type"], row["item_id"], row["side_id"]), row["confidence"]
-                    ),
-                    return_dtype=pl.Float64,
-                )
-                .alias("confidence")
+            stance_labels = _apply_joined_override(
+                stance_labels,
+                key_columns=["item_type", "item_id", "side_id"],
+                value_column="confidence",
+                updates=confidence_map,
+                dtype=pl.Float64,
             )
         return stance_labels
 

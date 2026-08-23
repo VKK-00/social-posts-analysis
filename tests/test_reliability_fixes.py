@@ -682,3 +682,24 @@ def test_checked_in_project_template_is_valid() -> None:
 
     config = load_config(Path("config") / "project.yaml")
     assert config.source.platform in {"facebook", "telegram", "x", "threads", "instagram"}
+
+
+# ---------------------------------------------------------------------------
+# 13. Order-insensitive normalized-run reuse (normalize.py)
+# ---------------------------------------------------------------------------
+
+
+def test_matching_normalized_run_is_order_insensitive(project_config, project_paths) -> None:
+    from social_posts_analysis.normalize import NormalizationService
+
+    service = NormalizationService(project_config, project_paths)
+    project_paths.processed_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {"run_id": ["r1"], "source_run_ids": [["b-run", "a-run"]]},
+        schema_overrides={"source_run_ids": pl.List(pl.String)},
+    ).write_parquet(project_paths.processed_root / "collection_runs.parquet")
+
+    # Same set of source runs in a different order still counts as merged.
+    assert service._has_matching_normalized_run("r1", ["a-run", "b-run"]) is True
+    assert service._has_matching_normalized_run("r1", ["b-run", "a-run"]) is True
+    assert service._has_matching_normalized_run("r1", ["a-run", "c-run"]) is False
