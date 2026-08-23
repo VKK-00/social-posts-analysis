@@ -271,7 +271,7 @@ class MetaApiCollector(BaseCollector):
 
     @staticmethod
     def _extract_media_refs(payload: dict[str, Any]) -> list[MediaReference]:
-        data = ((payload.get("attachments") or {}).get("data") or [])
+        data = (payload.get("attachments") or {}).get("data") or []
         post_id = str(payload["id"])
         refs: list[MediaReference] = []
         for index, item in enumerate(data, start=1):
@@ -293,14 +293,20 @@ class MetaApiCollector(BaseCollector):
         if "shared" not in status_type.lower() and not payload.get("parent_id"):
             return None, None, None, None
         origin_external_id = str(payload.get("parent_id") or "") or None
-        attachment_data = ((payload.get("attachments") or {}).get("data") or [])
+        attachment_data = (payload.get("attachments") or {}).get("data") or []
         attachment_target = attachment_data[0].get("target") if attachment_data else None
-        if origin_external_id is None and isinstance(attachment_target, dict) and attachment_target.get("id") is not None:
+        if (
+            origin_external_id is None
+            and isinstance(attachment_target, dict)
+            and attachment_target.get("id") is not None
+        ):
             origin_external_id = str(attachment_target.get("id"))
         origin_permalink = (attachment_data[0].get("url") if attachment_data else None) or payload.get("link")
         origin_post_id = None
         if origin_external_id:
-            origin_post_id = origin_external_id if "_" in origin_external_id else f"facebook:origin:{origin_external_id}"
+            origin_post_id = (
+                origin_external_id if "_" in origin_external_id else f"facebook:origin:{origin_external_id}"
+            )
         return "share", origin_post_id, origin_external_id, origin_permalink
 
     @staticmethod

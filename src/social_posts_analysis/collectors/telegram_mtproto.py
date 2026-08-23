@@ -39,7 +39,9 @@ class TelegramMtprotoCollector(BaseCollector):
         self.settings = config.collector.telegram_mtproto
         self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
-            raise CollectorUnavailableError("Telegram MTProto collector is disabled in config.collector.telegram_mtproto.enabled.")
+            raise CollectorUnavailableError(
+                "Telegram MTProto collector is disabled in config.collector.telegram_mtproto.enabled."
+            )
         if not self.settings.session_file:
             raise CollectorUnavailableError(
                 "Telegram MTProto collector requires collector.telegram_mtproto.session_file."
@@ -230,11 +232,7 @@ class TelegramMtprotoCollector(BaseCollector):
                     break
                 collected.extend(batch)
                 oldest = min(
-                    (
-                        value
-                        for value in (self._message_datetime(message) for message in batch)
-                        if value is not None
-                    ),
+                    (value for value in (self._message_datetime(message) for message in batch) if value is not None),
                     default=None,
                 )
                 if oldest is not None and oldest <= start:
@@ -246,14 +244,18 @@ class TelegramMtprotoCollector(BaseCollector):
                 self._source_scan_truncated = True
 
         filtered = [message for message in collected if self._within_range(self._message_datetime(message))]
-        filtered.sort(key=lambda message: (self._message_datetime(message) or datetime.min.replace(tzinfo=UTC)), reverse=True)
+        filtered.sort(
+            key=lambda message: self._message_datetime(message) or datetime.min.replace(tzinfo=UTC), reverse=True
+        )
         return filtered
 
     def _fetch_discussion_context(self, client: Any, source_entity: Any, message: Any) -> DiscussionContext | None:
         try:
             from telethon.tl import functions
 
-            result = client(functions.messages.GetDiscussionMessageRequest(peer=source_entity, msg_id=self._message_id(message)))
+            result = client(
+                functions.messages.GetDiscussionMessageRequest(peer=source_entity, msg_id=self._message_id(message))
+            )
             chat = None
             if getattr(result, "chats", None):
                 chat = result.chats[0]
@@ -451,11 +453,7 @@ class TelegramMtprotoCollector(BaseCollector):
         raw_path = raw_store.write_json("telegram_comments", slugify(comment_id), payload)
         reply_to_message_id = self._reply_to_message_id(message)
         parent_message_id = self._reply_to_parent_message_id(message)
-        parent_comment_id = (
-            message_to_comment_id.get(str(parent_message_id))
-            if parent_message_id is not None
-            else None
-        )
+        parent_comment_id = message_to_comment_id.get(str(parent_message_id)) if parent_message_id is not None else None
         depth = comment_depths.get(parent_comment_id, -1) + 1 if parent_comment_id else 0
 
         reaction_breakdown = self._reaction_breakdown(message)

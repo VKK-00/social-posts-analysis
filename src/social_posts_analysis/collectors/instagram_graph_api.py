@@ -29,7 +29,9 @@ class InstagramGraphApiCollector(BaseCollector):
         "id,caption,media_type,media_product_type,media_url,permalink,timestamp,comments_count,"
         "like_count,thumbnail_url,children{media_type,media_url,thumbnail_url,permalink}"
     )
-    COMMENT_FIELDS = "id,text,timestamp,username,like_count,replies{id,text,timestamp,username,like_count,parent_id},parent_id"
+    COMMENT_FIELDS = (
+        "id,text,timestamp,username,like_count,replies{id,text,timestamp,username,like_count,parent_id},parent_id"
+    )
 
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
@@ -56,7 +58,9 @@ class InstagramGraphApiCollector(BaseCollector):
             platform="instagram",
             source_id=source_id,
             source_name=source_payload.get("name") or source_payload.get("username") or self.config.source.source_name,
-            source_url=f"https://www.instagram.com/{source_payload.get('username')}/" if source_payload.get("username") else self.config.source.url,
+            source_url=f"https://www.instagram.com/{source_payload.get('username')}/"
+            if source_payload.get("username")
+            else self.config.source.url,
             source_type="account",
             about=source_payload.get("biography"),
             followers_count=safe_int(source_payload.get("followers_count")),
@@ -100,7 +104,9 @@ class InstagramGraphApiCollector(BaseCollector):
                 break
         return pages
 
-    def _collect_post(self, *, media: dict[str, Any], source_snapshot: SourceSnapshot, raw_store: RawSnapshotStore) -> PostSnapshot:
+    def _collect_post(
+        self, *, media: dict[str, Any], source_snapshot: SourceSnapshot, raw_store: RawSnapshotStore
+    ) -> PostSnapshot:
         media_id = str(media["id"])
         post_id = f"instagram:{source_snapshot.source_id}:{media_id}"
         raw_path = raw_store.write_json("instagram_posts", slugify(post_id), media)
@@ -129,8 +135,12 @@ class InstagramGraphApiCollector(BaseCollector):
             comments=comments,
         )
 
-    def _collect_comments(self, *, media_id: str, parent_post_id: str, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
-        payload = self._get_json(f"/{self.settings.api_version}/{media_id}/comments", params={"fields": self.COMMENT_FIELDS})
+    def _collect_comments(
+        self, *, media_id: str, parent_post_id: str, raw_store: RawSnapshotStore
+    ) -> list[CommentSnapshot]:
+        payload = self._get_json(
+            f"/{self.settings.api_version}/{media_id}/comments", params={"fields": self.COMMENT_FIELDS}
+        )
         raw_store.write_json("instagram_comment_pages", slugify(parent_post_id), payload)
         comments: list[CommentSnapshot] = []
         for item in payload.get("data") or []:
@@ -177,7 +187,9 @@ class InstagramGraphApiCollector(BaseCollector):
                         author=AuthorSnapshot(
                             author_id=reply.get("username"),
                             name=reply.get("username"),
-                            profile_url=f"https://www.instagram.com/{reply.get('username')}/" if reply.get("username") else None,
+                            profile_url=f"https://www.instagram.com/{reply.get('username')}/"
+                            if reply.get("username")
+                            else None,
                         ),
                     )
                 )
@@ -197,7 +209,10 @@ class InstagramGraphApiCollector(BaseCollector):
                     preview_url=str(media.get("thumbnail_url") or media_url),
                 )
             )
-        for index, child in enumerate(((media.get("children") or {}).get("data") if isinstance(media.get("children"), dict) else []) or [], start=2):
+        for index, child in enumerate(
+            ((media.get("children") or {}).get("data") if isinstance(media.get("children"), dict) else []) or [],
+            start=2,
+        ):
             refs.append(
                 MediaReference(
                     media_id=f"{post_id}:media:{index}",

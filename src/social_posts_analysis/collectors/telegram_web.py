@@ -29,7 +29,9 @@ class TelegramWebCollector(BaseCollector):
         self.settings = config.collector.telegram_web
         self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
-            raise CollectorUnavailableError("Telegram web collector is disabled in config.collector.telegram_web.enabled.")
+            raise CollectorUnavailableError(
+                "Telegram web collector is disabled in config.collector.telegram_web.enabled."
+            )
         ensure_playwright_available("Telegram web collector requires the playwright package and browser install.")
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
@@ -54,7 +56,9 @@ class TelegramWebCollector(BaseCollector):
             )
             try:
                 source_page = runtime.context.new_page()
-                source_page.goto(source_feed_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000))
+                source_page.goto(
+                    source_feed_url, wait_until="domcontentloaded", timeout=int(self.settings.timeout_seconds * 1000)
+                )
                 self._scroll_feed(source_page)
                 source_payload = self._extract_feed_payload(source_page)
                 source_path = raw_store.write_json("telegram_web_source", "source_feed", source_payload)
@@ -66,7 +70,9 @@ class TelegramWebCollector(BaseCollector):
                 discussion_reference = self.config.source.telegram.discussion_chat_id
                 if discussion_reference:
                     try:
-                        discussion_feed_url = self._resolve_feed_url(discussion_reference, discussion_reference, discussion_reference)
+                        discussion_feed_url = self._resolve_feed_url(
+                            discussion_reference, discussion_reference, discussion_reference
+                        )
                         discussion_page = runtime.context.new_page()
                         discussion_page.goto(
                             discussion_feed_url,
@@ -117,7 +123,9 @@ class TelegramWebCollector(BaseCollector):
             posts=posts,
         )
 
-    def _build_posts_from_payload(self, source_payload: dict[str, Any], raw_store: RawSnapshotStore) -> list[PostSnapshot]:
+    def _build_posts_from_payload(
+        self, source_payload: dict[str, Any], raw_store: RawSnapshotStore
+    ) -> list[PostSnapshot]:
         source_id = str(source_payload.get("source_id") or self._source_reference())
         source_name = source_payload.get("source_name") or self.config.source.source_name or source_id
         posts: list[PostSnapshot] = []
@@ -129,7 +137,9 @@ class TelegramWebCollector(BaseCollector):
             post_id = f"telegram:{source_id}:{item['message_id']}"
             raw_path = raw_store.write_json("telegram_web_posts", slugify(post_id), item)
             origin_post_id, origin_external_id, origin_permalink = self._forward_origin_metadata(item)
-            is_forward = bool(item.get("forwarded_from_name") or item.get("forwarded_permalink") or item.get("forwarded_message_id"))
+            is_forward = bool(
+                item.get("forwarded_from_name") or item.get("forwarded_permalink") or item.get("forwarded_message_id")
+            )
             posts.append(
                 PostSnapshot(
                     post_id=post_id,
@@ -180,11 +190,10 @@ class TelegramWebCollector(BaseCollector):
             if not self._within_range(created_at):
                 continue
             reply_permalink = self._normalize_permalink(item.get("reply_permalink"))
-            reply_message_id = str(
-                item.get("reply_message_id")
-                or self._message_id_from_permalink(reply_permalink)
-                or ""
-            ).strip() or None
+            reply_message_id = (
+                str(item.get("reply_message_id") or self._message_id_from_permalink(reply_permalink) or "").strip()
+                or None
+            )
             if not reply_permalink:
                 continue
 
@@ -249,7 +258,11 @@ class TelegramWebCollector(BaseCollector):
 
         return [
             updated_posts[post.post_id].model_copy(
-                update={"comments": sorted(updated_posts[post.post_id].comments, key=lambda item: (item.depth, item.created_at or ""))}
+                update={
+                    "comments": sorted(
+                        updated_posts[post.post_id].comments, key=lambda item: (item.depth, item.created_at or "")
+                    )
+                }
             )
             for post in posts
         ]
@@ -323,7 +336,8 @@ class TelegramWebCollector(BaseCollector):
                     "permalink": self._normalize_permalink(item.get("permalink")),
                     "forwarded_permalink": self._normalize_permalink(item.get("forwarded_permalink")),
                     "reply_permalink": self._normalize_permalink(item.get("reply_permalink")),
-                    "reply_message_id": item.get("reply_message_id") or self._message_id_from_permalink(item.get("reply_permalink")),
+                    "reply_message_id": item.get("reply_message_id")
+                    or self._message_id_from_permalink(item.get("reply_permalink")),
                     "reaction_breakdown": {
                         str(key): parse_compact_number(str(value))
                         for key, value in (item.get("reaction_breakdown") or {}).items()
@@ -334,7 +348,9 @@ class TelegramWebCollector(BaseCollector):
             **payload,
             "source_name": payload.get("source_name") or self.config.source.source_name or self._source_reference(),
             "source_id": payload.get("source_id") or self._source_reference(),
-            "source_url": payload.get("source_url") or self.config.source.url or source_feed_url_from_name(self._source_reference()),
+            "source_url": payload.get("source_url")
+            or self.config.source.url
+            or source_feed_url_from_name(self._source_reference()),
             "messages": messages,
         }
 
@@ -351,11 +367,10 @@ class TelegramWebCollector(BaseCollector):
 
     def _forward_origin_metadata(self, item: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
         forwarded_permalink = self._normalize_permalink(item.get("forwarded_permalink"))
-        forwarded_message_id = str(
-            item.get("forwarded_message_id")
-            or self._message_id_from_permalink(forwarded_permalink)
-            or ""
-        ).strip() or None
+        forwarded_message_id = (
+            str(item.get("forwarded_message_id") or self._message_id_from_permalink(forwarded_permalink) or "").strip()
+            or None
+        )
         if forwarded_permalink:
             parsed = urlparse(forwarded_permalink)
             parts = [part for part in parsed.path.split("/") if part]
@@ -405,7 +420,11 @@ class TelegramWebCollector(BaseCollector):
         return None
 
     def _source_reference(self) -> str:
-        return self.config.source.source_name or self.config.source.source_id or self._extract_name_from_url(self.config.source.url)
+        return (
+            self.config.source.source_name
+            or self.config.source.source_id
+            or self._extract_name_from_url(self.config.source.url)
+        )
 
     @staticmethod
     def _extract_name_from_url(url: str | None) -> str:
@@ -427,9 +446,12 @@ class TelegramWebCollector(BaseCollector):
                     return f"https://t.me/s/{parts[-1]}"
         reference = source_name or source_id
         if not reference:
-            raise CollectorUnavailableError("Telegram web collector requires source.url, source.source_name, or source.source_id.")
+            raise CollectorUnavailableError(
+                "Telegram web collector requires source.url, source.source_name, or source.source_id."
+            )
         reference = reference.strip().lstrip("@")
         return source_feed_url_from_name(reference)
+
 
 def source_feed_url_from_name(name: str) -> str:
     return f"https://t.me/s/{name}"

@@ -25,11 +25,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Ruff
+      - name: Ruff lint
         run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
 
       - name: Mypy
         run: uv run mypy src
 
-      - name: Pytest
-        run: uv run pytest -q
+      - name: Pytest with coverage (unit tests only; live tests are skipped)
+        run: uv run pytest -q --cov=social_posts_analysis --cov-report=term-missing
+
+      - name: Build package
+        run: uv build
+
+      - name: CLI smoke test
+        run: uv run social-posts-analysis --help

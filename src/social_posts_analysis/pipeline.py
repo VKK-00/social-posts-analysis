@@ -111,8 +111,7 @@ class CollectionService:
         registry_entry = _PLATFORM_COLLECTOR_REGISTRY.get(platform)
         if registry_entry is not None:
             return [
-                collector_class(self.config)
-                for collector_class in registry_entry.get(mode, registry_entry["_default"])
+                collector_class(self.config) for collector_class in registry_entry.get(mode, registry_entry["_default"])
             ]
 
         # Facebook keeps the hybrid API/web fallback chain.

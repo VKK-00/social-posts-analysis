@@ -50,7 +50,9 @@ def test_propagation_helpers_classify_origin_posts_and_comment_scope() -> None:
         source_collector="test",
     )
 
-    origin_scope = resolve_comment_scope(origin_post, comment.model_copy(update={"parent_post_id": origin_post.post_id}))
+    origin_scope = resolve_comment_scope(
+        origin_post, comment.model_copy(update={"parent_post_id": origin_post.post_id})
+    )
     propagation_scope = resolve_comment_scope(propagation_post, comment)
     filtered = filter_origin_posts_frame(
         pl.DataFrame(

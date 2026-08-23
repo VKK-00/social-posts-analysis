@@ -28,11 +28,7 @@ STOPWORDS = {
 
 
 def _tokenize(text: str) -> list[str]:
-    return [
-        token
-        for token in re.findall(r"[\w']+", text.lower())
-        if len(token) > 2 and token not in STOPWORDS
-    ]
+    return [token for token in re.findall(r"[\w']+", text.lower()) if len(token) > 2 and token not in STOPWORDS]
 
 
 class NarrativeClusterer:

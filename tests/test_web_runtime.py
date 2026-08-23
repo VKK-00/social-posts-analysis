@@ -31,7 +31,9 @@ class FakePlaywright:
         self.chromium = FakeChromium(failures_before_success=failures_before_success)
 
 
-def test_open_authenticated_web_runtime_retries_without_profile_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_open_authenticated_web_runtime_retries_without_profile_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     created_dirs: list[Path] = []
 
     def fake_prepare_temp_profile_directory(**_kwargs) -> Path:  # noqa: ANN003

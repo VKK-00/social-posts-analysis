@@ -17,7 +17,9 @@ def validate_project_config(config: Any) -> None:
 
     if config.source.platform == "telegram":
         if config.collector.mode not in {"mtproto", "web", "bot_api"}:
-            raise ValueError("Telegram source requires collector.mode='mtproto', collector.mode='web', or collector.mode='bot_api'.")
+            raise ValueError(
+                "Telegram source requires collector.mode='mtproto', collector.mode='web', or collector.mode='bot_api'."
+            )
         if config.collector.mode == "mtproto":
             if not config.collector.telegram_mtproto.enabled:
                 raise ValueError("Telegram source requires collector.telegram_mtproto.enabled=true.")
@@ -35,7 +37,9 @@ def validate_project_config(config: Any) -> None:
             if not config.collector.telegram_bot_api.enabled:
                 raise ValueError("Telegram Bot API source requires collector.telegram_bot_api.enabled=true.")
             if not config.collector.telegram_bot_api.bot_token:
-                raise ValueError("Telegram Bot API source requires collector.telegram_bot_api.bot_token or TELEGRAM_BOT_TOKEN.")
+                raise ValueError(
+                    "Telegram Bot API source requires collector.telegram_bot_api.bot_token or TELEGRAM_BOT_TOKEN."
+                )
         else:
             if not config.collector.telegram_web.enabled:
                 raise ValueError("Telegram web source requires collector.telegram_web.enabled=true.")

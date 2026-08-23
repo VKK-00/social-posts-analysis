@@ -48,4 +48,3 @@ class LanguageDetector:
         if re.search(r"[a-z]", lowered):
             return LanguagePrediction(language="en", confidence=0.45, method="heuristic-latin")
         return LanguagePrediction(language="unknown", confidence=0.2, method="heuristic-fallback")
-

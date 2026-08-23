@@ -26,13 +26,17 @@ class InstagramWebCollector(BaseCollector):
         self.settings = config.collector.instagram_web
         self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
-            raise CollectorUnavailableError("Instagram web collector is disabled in config.collector.instagram_web.enabled.")
+            raise CollectorUnavailableError(
+                "Instagram web collector is disabled in config.collector.instagram_web.enabled."
+            )
         ensure_playwright_available("Instagram web collector requires the playwright package and browser install.")
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
         from playwright.sync_api import sync_playwright
 
-        warnings = ["Instagram web extraction is best-effort and public comment visibility depends on the current web UI."]
+        warnings = [
+            "Instagram web extraction is best-effort and public comment visibility depends on the current web UI."
+        ]
         profile_url = self._resolve_profile_url()
         with sync_playwright() as playwright:
             runtime = self._open_collection_context(playwright)
@@ -45,12 +49,16 @@ class InstagramWebCollector(BaseCollector):
                 source_path = raw_store.write_json("instagram_web_source", "profile_feed", payload)
                 source_name = payload.get("source_name") or self.config.source.source_name or self._source_reference()
                 source_id = payload.get("source_id") or self._source_reference()
-                posts = self._build_posts_from_payload(payload, source_id=source_id, source_name=source_name, raw_store=raw_store)
+                posts = self._build_posts_from_payload(
+                    payload, source_id=source_id, source_name=source_name, raw_store=raw_store
+                )
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
                     comments = self._collect_comments_for_post(context=runtime.context, post=post, raw_store=raw_store)
                     updated_posts.append(
-                        post.model_copy(update={"comments": comments, "comments_count": max(post.comments_count, len(comments))})
+                        post.model_copy(
+                            update={"comments": comments, "comments_count": max(post.comments_count, len(comments))}
+                        )
                     )
             finally:
                 runtime.close()
@@ -107,13 +115,17 @@ class InstagramWebCollector(BaseCollector):
                     author=AuthorSnapshot(
                         author_id=item.get("author_username") or source_id,
                         name=item.get("author_name") or source_name,
-                        profile_url=f"https://www.instagram.com/{item.get('author_username')}/" if item.get("author_username") else profile_url_from_name(source_id),
+                        profile_url=f"https://www.instagram.com/{item.get('author_username')}/"
+                        if item.get("author_username")
+                        else profile_url_from_name(source_id),
                     ),
                 )
             )
         return posts
 
-    def _collect_comments_for_post(self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
+    def _collect_comments_for_post(
+        self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore
+    ) -> list[CommentSnapshot]:
         if not post.permalink:
             return []
         page = context.new_page()
@@ -155,7 +167,9 @@ class InstagramWebCollector(BaseCollector):
                 author=AuthorSnapshot(
                     author_id=item.get("author_username"),
                     name=item.get("author_name"),
-                    profile_url=f"https://www.instagram.com/{item.get('author_username')}/" if item.get("author_username") else None,
+                    profile_url=f"https://www.instagram.com/{item.get('author_username')}/"
+                    if item.get("author_username")
+                    else None,
                 ),
             )
             comments.append(snapshot)
@@ -255,7 +269,9 @@ class InstagramWebCollector(BaseCollector):
             return self.config.source.source_id
         if self.config.source.url:
             return self.config.source.url.rstrip("/").split("/")[-1]
-        raise CollectorUnavailableError("Instagram web collector requires source.url, source.source_name, or source.source_id.")
+        raise CollectorUnavailableError(
+            "Instagram web collector requires source.url, source.source_name, or source.source_id."
+        )
 
     def _within_range(self, raw_value: str | None) -> bool:
         return self.range_filter.contains(raw_value, allow_missing=True)

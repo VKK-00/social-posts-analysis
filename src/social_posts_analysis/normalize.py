@@ -59,8 +59,7 @@ class NormalizationService:
         )
 
         outputs = {
-            table_name: persist_table(self.paths, table_name, records)
-            for table_name, records in table_records.items()
+            table_name: persist_table(self.paths, table_name, records) for table_name, records in table_records.items()
         }
         sync_duckdb(self.paths.database_path, outputs)
         return {
@@ -78,5 +77,9 @@ class NormalizationService:
         if collection_runs.is_empty() or "source_run_ids" not in collection_runs.columns:
             return False
         raw_source_run_ids = collection_runs["source_run_ids"][0]
-        existing_source_run_ids = raw_source_run_ids.to_list() if isinstance(raw_source_run_ids, pl.Series) else list(raw_source_run_ids or [])
+        existing_source_run_ids = (
+            raw_source_run_ids.to_list()
+            if isinstance(raw_source_run_ids, pl.Series)
+            else list(raw_source_run_ids or [])
+        )
         return existing_source_run_ids == source_run_ids

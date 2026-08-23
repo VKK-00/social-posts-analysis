@@ -10,8 +10,12 @@ from social_posts_analysis.collectors.public_web import PublicWebCollector
 from social_posts_analysis.config_models import load_config
 from social_posts_analysis.raw_store import RawSnapshotStore
 
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(os.getenv("SPA_RUN_PUBLIC_WEB_LIVE") != "1", reason="manual authenticated public_web live test"),
+]
 
-@pytest.mark.skipif(os.getenv("SPA_RUN_PUBLIC_WEB_LIVE") != "1", reason="manual authenticated public_web live test")
+
 def test_public_web_authenticated_collect_live(tmp_path: Path) -> None:
     config = load_config(Path("config/project.local.yaml"))
     collector = PublicWebCollector(config)

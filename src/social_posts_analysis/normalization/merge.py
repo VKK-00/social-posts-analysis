@@ -27,9 +27,7 @@ def resolve_source_run_ids(config: ProjectConfig, paths: ProjectPaths, resolved_
     target_manifest = load_manifest(paths, resolved_run_id)
     target_key = manifest_merge_key(target_manifest)
     compatible_run_ids = [
-        run_id
-        for run_id in available_run_ids
-        if manifest_merge_key(load_manifest(paths, run_id)) == target_key
+        run_id for run_id in available_run_ids if manifest_merge_key(load_manifest(paths, run_id)) == target_key
     ]
     target_index = compatible_run_ids.index(resolved_run_id)
     merge_recent_runs = max(1, config.normalization.merge_recent_runs)
@@ -112,7 +110,9 @@ def merge_source_snapshots(sources: list[SourceSnapshot]) -> SourceSnapshot:
                 "fan_count": merged.fan_count or source.fan_count,
                 "discussion_chat_id": merged.discussion_chat_id or source.discussion_chat_id,
                 "discussion_chat_name": merged.discussion_chat_name or source.discussion_chat_name,
-                "discussion_linked": merged.discussion_linked if merged.discussion_linked is not None else source.discussion_linked,
+                "discussion_linked": merged.discussion_linked
+                if merged.discussion_linked is not None
+                else source.discussion_linked,
                 "filtered_service_message_count": max(
                     merged.filtered_service_message_count,
                     source.filtered_service_message_count,
@@ -137,7 +137,9 @@ def merge_post_snapshots(existing: PostSnapshot | None, incoming: PostSnapshot) 
     return existing.model_copy(
         update={
             "created_at": existing.created_at or incoming.created_at,
-            "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
+            "message": incoming.message
+            if len(incoming.message or "") > len(existing.message or "")
+            else existing.message,
             "permalink": existing.permalink or incoming.permalink,
             "origin_post_id": existing.origin_post_id or incoming.origin_post_id,
             "origin_external_id": existing.origin_external_id or incoming.origin_external_id,
@@ -174,7 +176,9 @@ def merge_comment_snapshots(existing: CommentSnapshot | None, incoming: CommentS
             "thread_root_post_id": existing.thread_root_post_id or incoming.thread_root_post_id,
             "origin_post_id": existing.origin_post_id or incoming.origin_post_id,
             "created_at": existing.created_at or incoming.created_at,
-            "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
+            "message": incoming.message
+            if len(incoming.message or "") > len(existing.message or "")
+            else existing.message,
             "permalink": existing.permalink or incoming.permalink,
             "reactions": max(existing.reactions, incoming.reactions),
             "reaction_breakdown_json": existing.reaction_breakdown_json or incoming.reaction_breakdown_json,

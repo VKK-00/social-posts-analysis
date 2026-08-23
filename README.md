@@ -110,6 +110,7 @@ Important top-level settings:
 - `collector.wait_between_passes_seconds`
 - `normalization.merge_recent_runs`
 - `normalization.source_run_ids`
+- `normalization.pseudonymize_authors`
 - `sides`
 - `providers.embeddings`
 - `providers.llm`
@@ -514,6 +515,42 @@ These files or directories should stay local and should not be committed:
 - Meta, Telegram, X, Threads, Instagram, and provider secrets
 - virtual environments and cache directories
 
+## Research Features
+
+### Support metrics with uncertainty
+
+`support_metrics` carries `support_ratio_low` and `support_ratio_high` — a 95%
+Wilson score interval around the support share among decided comments
+(`support + oppose + neutral`; `unclear` is excluded by design). Use these
+bounds instead of the raw ratio when comparing scopes with few comments.
+
+### Author pseudonymization
+
+Set `normalization.pseudonymize_authors: true` to store third-party authors
+(commenters, propagation authors) under stable non-reversible pseudonyms
+(`anon-<sha256 prefix>`). Names and profile URLs are dropped from normalized
+tables, but joins across `posts`, `comments`, and `authors` keep working. The
+analysed source itself stays identifiable so runs remain attributable.
+
+### Local semantic embeddings (optional)
+
+For reproducible, offline, multilingual embeddings without an API:
+
+```bash
+uv sync --extra dev --extra semantic
+```
+
+```yaml
+providers:
+  embeddings:
+    kind: "sentence_transformers"
+    # optional: local path or HuggingFace model name
+    # local_model: "paraphrase-multilingual-MiniLM-L12-v2"
+```
+
+Embedding cache keys include the resolved model name, so switching models
+never reuses stale vectors.
+
 ## Testing
 
 Run:
@@ -542,8 +579,10 @@ The current test suite covers:
 GitHub Actions runs:
 
 - `ruff check .`
+- `ruff format --check .`
 - `mypy src`
-- `pytest -q`
+- `pytest -q` with coverage (live tests are skipped; deselect with `-m "not live"`)
+- `uv build` plus a CLI smoke test
 
 ## Manual Acceptance Notes
 

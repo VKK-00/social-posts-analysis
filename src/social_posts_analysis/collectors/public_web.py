@@ -138,7 +138,9 @@ class PublicWebCollector(BaseCollector):
                             timeout=int(self.settings.timeout_seconds * 1000),
                         )
                         plugin_page.wait_for_timeout(2500)
-                        plugin_candidates = self._postprocess_candidates(self._extract_plugin_feed_candidates(plugin_page))
+                        plugin_candidates = self._postprocess_candidates(
+                            self._extract_plugin_feed_candidates(plugin_page)
+                        )
                         plugin_payload = {
                             "title": plugin_page.title(),
                             "url": plugin_page.url,
@@ -175,7 +177,9 @@ class PublicWebCollector(BaseCollector):
                     tab_name="reels",
                     raw_store=raw_store,
                 )
-                candidates = direct_feed_candidates + plugin_candidates + video_candidates + photo_candidates + reel_candidates
+                candidates = (
+                    direct_feed_candidates + plugin_candidates + video_candidates + photo_candidates + reel_candidates
+                )
                 if not candidates:
                     page_payload, fallback_candidates = self._collect_direct_feed_candidates(
                         context=discovery_runtime.context,
@@ -199,7 +203,9 @@ class PublicWebCollector(BaseCollector):
                     if not permalink or permalink in seen_permalinks:
                         continue
                     seen_permalinks.add(permalink)
-                    published_at = candidate.get("published_at") or self._parse_post_timestamp(candidate.get("published_hint") or "")
+                    published_at = candidate.get("published_at") or self._parse_post_timestamp(
+                        candidate.get("published_hint") or ""
+                    )
                     if self.config.date_range.start or self.config.date_range.end:
                         if published_at and not self._within_configured_range(published_at):
                             continue
@@ -344,7 +350,10 @@ class PublicWebCollector(BaseCollector):
         ]
         if target_comment_count >= 40:
             attempts.append(
-                {"aggressive": True, "comment_limit": self._comment_article_limit(target_comment_count + 80, aggressive=True)}
+                {
+                    "aggressive": True,
+                    "comment_limit": self._comment_article_limit(target_comment_count + 80, aggressive=True),
+                }
             )
 
         best_payload: dict[str, Any] | None = None
@@ -740,7 +749,6 @@ class PublicWebCollector(BaseCollector):
             posts.append(post)
         return posts
 
-
     @staticmethod
     def _propagation_metadata(
         *,
@@ -786,9 +794,7 @@ class PublicWebCollector(BaseCollector):
                 "created_at": existing.created_at or incoming.created_at,
                 "permalink": existing.permalink or incoming.permalink,
                 "message": (
-                    incoming.message
-                    if len(incoming.message or "") > len(existing.message or "")
-                    else existing.message
+                    incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message
                 ),
                 "reactions": max(existing.reactions, incoming.reactions),
                 "shares": max(existing.shares, incoming.shares),

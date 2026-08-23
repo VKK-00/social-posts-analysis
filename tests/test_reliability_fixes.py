@@ -578,3 +578,107 @@ def test_openai_compatible_provider_retries_on_429(monkeypatch) -> None:
     result = provider.classify_stance("текст", _SideStub())
     assert client.calls == 2
     assert result["label"] == "support"
+
+
+# ---------------------------------------------------------------------------
+# 11. Optional sentence-transformers embeddings provider
+# ---------------------------------------------------------------------------
+
+
+class _FakeSentenceTransformer:
+    last_model_name: str | None = None
+
+    def __init__(self, model_name: str) -> None:
+        type(self).last_model_name = model_name
+        self.model_name = model_name
+
+    def encode(self, texts: list[str], normalize_embeddings: bool = False) -> Any:
+        vectors = []
+        for index, _text in enumerate(texts):
+            vector = np.zeros(384, dtype=float)
+            vector[index % 384] = 1.0
+            vector[(index + 7) % 384] = 0.5
+            if normalize_embeddings:
+                norm = np.linalg.norm(vector)
+                if norm:
+                    vector = vector / norm
+            vectors.append(vector)
+        return np.vstack(vectors)
+
+
+def _install_fake_sentence_transformers(monkeypatch) -> None:
+    import types
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = _FakeSentenceTransformer
+    monkeypatch.setitem(__import__("sys").modules, "sentence_transformers", fake_module)
+
+
+def _embedding_config(**overrides: Any) -> Any:
+    from social_posts_analysis.config import EmbeddingProviderConfig
+
+    return EmbeddingProviderConfig(kind="sentence_transformers", **overrides)
+
+
+def test_sentence_transformers_provider_encodes_locally(monkeypatch) -> None:
+    from social_posts_analysis.analysis.providers import SentenceTransformerEmbeddingProvider
+
+    _install_fake_sentence_transformers(monkeypatch)
+    provider = SentenceTransformerEmbeddingProvider(_embedding_config())
+
+    # The generic API model name maps to a multilingual local default.
+    assert provider.model_name == "paraphrase-multilingual-MiniLM-L12-v2"
+    assert provider.dimension == 384
+
+    texts = ["перший текст", "другий текст"]
+    vectors = provider.embed_texts(texts)
+    assert vectors.shape == (2, 384)
+    # Normalized embeddings have unit length.
+    assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0)
+
+    empty = provider.embed_texts([])
+    assert empty.shape == (0, 384)
+
+
+def test_sentence_transformers_provider_respects_local_model(monkeypatch) -> None:
+    from social_posts_analysis.analysis.providers import SentenceTransformerEmbeddingProvider
+
+    _install_fake_sentence_transformers(monkeypatch)
+    provider = SentenceTransformerEmbeddingProvider(
+        _embedding_config(model="text-embedding-3-small", local_model="/models/custom-encoder")
+    )
+    assert provider.model_name == "/models/custom-encoder"
+    assert provider.dimension == 256
+
+
+def test_sentence_transformers_provider_fails_without_extra() -> None:
+    from social_posts_analysis.analysis.providers import SentenceTransformerEmbeddingProvider
+
+    try:
+        import sentence_transformers  # noqa: F401
+
+        pytest.skip("sentence-transformers is installed; failure path not reachable")
+    except ImportError:
+        pass
+
+    with pytest.raises(ValueError, match="semantic"):
+        SentenceTransformerEmbeddingProvider(_embedding_config())
+
+
+def test_config_accepts_sentence_transformers_embedding_kind() -> None:
+    payload = _base_project_payload()
+    payload["providers"] = {"embeddings": {"kind": "sentence_transformers"}}
+    config = ProjectConfig.model_validate(payload)
+    assert config.providers.embeddings.kind == "sentence_transformers"
+
+
+# ---------------------------------------------------------------------------
+# 12. Checked-in config template stays valid
+# ---------------------------------------------------------------------------
+
+
+def test_checked_in_project_template_is_valid() -> None:
+    from social_posts_analysis.config import load_config
+
+    config = load_config(Path("config") / "project.yaml")
+    assert config.source.platform in {"facebook", "telegram", "x", "threads", "instagram"}

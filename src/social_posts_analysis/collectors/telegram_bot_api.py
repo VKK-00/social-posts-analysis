@@ -29,9 +29,13 @@ class TelegramBotApiCollector(BaseCollector):
         self.config = config
         self.settings = config.collector.telegram_bot_api
         if not self.settings.enabled:
-            raise CollectorUnavailableError("Telegram Bot API collector is disabled in config.collector.telegram_bot_api.enabled.")
+            raise CollectorUnavailableError(
+                "Telegram Bot API collector is disabled in config.collector.telegram_bot_api.enabled."
+            )
         if not self.settings.bot_token:
-            raise CollectorUnavailableError("Telegram Bot API collector requires TELEGRAM_BOT_TOKEN or collector.telegram_bot_api.bot_token.")
+            raise CollectorUnavailableError(
+                "Telegram Bot API collector requires TELEGRAM_BOT_TOKEN or collector.telegram_bot_api.bot_token."
+            )
         self.client = httpx.Client(timeout=self.settings.timeout_seconds)
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
@@ -116,7 +120,9 @@ class TelegramBotApiCollector(BaseCollector):
             raw_path=str(raw_store.run_dir / "telegram_bot_updates/updates.json"),
         )
         posts = [
-            post.model_copy(update={"comments": sorted(post.comments, key=lambda item: (item.depth, item.created_at or ""))})
+            post.model_copy(
+                update={"comments": sorted(post.comments, key=lambda item: (item.depth, item.created_at or ""))}
+            )
             for _, post in sorted(posts_by_message_id.items(), key=lambda item: item[0], reverse=True)
         ]
         return CollectionManifest(
@@ -131,7 +137,9 @@ class TelegramBotApiCollector(BaseCollector):
             posts=posts,
         )
 
-    def _build_post_snapshot(self, *, message: dict[str, Any], chat: dict[str, Any], raw_store: RawSnapshotStore) -> PostSnapshot:
+    def _build_post_snapshot(
+        self, *, message: dict[str, Any], chat: dict[str, Any], raw_store: RawSnapshotStore
+    ) -> PostSnapshot:
         source_id = self._chat_identifier(chat) or self._source_reference()
         message_id = self._message_id(message)
         post_id = f"telegram:{source_id}:{message_id}"
@@ -306,7 +314,9 @@ class TelegramBotApiCollector(BaseCollector):
             parts = [part for part in parsed.path.split("/") if part and part != "s"]
             if parts:
                 return parts[-1].lstrip("@")
-        raise CollectorUnavailableError("Telegram Bot API collector requires source.source_name, source.source_id, or source.url.")
+        raise CollectorUnavailableError(
+            "Telegram Bot API collector requires source.source_name, source.source_id, or source.url."
+        )
 
     @staticmethod
     def _chat_matches(chat: dict[str, Any], reference: str | None) -> bool:
@@ -322,7 +332,9 @@ class TelegramBotApiCollector(BaseCollector):
     def _chat_identifier(chat: dict[str, Any] | None) -> str | None:
         if not chat:
             return None
-        return str(chat.get("username") or chat.get("id")) if chat.get("username") or chat.get("id") is not None else None
+        return (
+            str(chat.get("username") or chat.get("id")) if chat.get("username") or chat.get("id") is not None else None
+        )
 
     @staticmethod
     def _chat_name(chat: dict[str, Any] | None) -> str | None:

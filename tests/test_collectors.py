@@ -110,7 +110,9 @@ def test_public_web_time_parser_handles_relative_and_calendar_values() -> None:
     one_day = PublicWebCollector._parse_post_timestamp("1d")
     calendar = PublicWebCollector._parse_post_timestamp("March 15")
     localized = PublicWebCollector._parse_post_timestamp("24 березня 2026 року")
-    embedded = PublicWebCollector._parse_post_timestamp("Рівно п’ять років тому, 24 березня 2026 року, сторінка опублікувала допис")
+    embedded = PublicWebCollector._parse_post_timestamp(
+        "Рівно п’ять років тому, 24 березня 2026 року, сторінка опублікувала допис"
+    )
     yesterday_ua = PublicWebCollector._parse_post_timestamp("Вчора")
     yesterday_ru = PublicWebCollector._parse_post_timestamp("Вчера в 14:03")
 
@@ -322,7 +324,9 @@ def test_public_web_expansion_patterns_include_localized_variants() -> None:
     assert any("Show more comments" in pattern for pattern in comment_patterns)
     assert any("\\u041f\\u043e\\u043a\\u0430\\u0437\\u0430\\u0442\\u0438" in pattern for pattern in comment_patterns)
     assert any("See previous replies" in pattern for pattern in reply_patterns)
-    assert any("\\u0412\\u0456\\u0434\\u043f\\u043e\\u0432\\u0456\\u0434\\u0456" in pattern for pattern in reply_patterns)
+    assert any(
+        "\\u0412\\u0456\\u0434\\u043f\\u043e\\u0432\\u0456\\u0434\\u0456" in pattern for pattern in reply_patterns
+    )
 
 
 def test_public_web_extracts_embedded_publish_time_from_html() -> None:
@@ -1122,7 +1126,9 @@ def test_x_api_collector_collects_posts_and_nested_replies(tmp_path: Path, monke
     assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
 
 
-def test_x_api_collector_warns_when_quote_thread_has_reply_count_but_search_returns_no_replies(tmp_path: Path, monkeypatch) -> None:
+def test_x_api_collector_warns_when_quote_thread_has_reply_count_but_search_returns_no_replies(
+    tmp_path: Path, monkeypatch
+) -> None:
     collector = XApiCollector(_x_config())
 
     def fake_get_json(self, endpoint, params=None):  # noqa: ANN001, ANN202
@@ -1201,7 +1207,12 @@ def test_telegram_bot_api_collector_maps_channel_posts_and_discussion_replies(tm
                     "channel_post": {
                         "message_id": 10,
                         "date": 1775632800,
-                        "chat": {"id": -100100, "type": "channel", "title": "Example Channel", "username": "example_channel"},
+                        "chat": {
+                            "id": -100100,
+                            "type": "channel",
+                            "title": "Example Channel",
+                            "username": "example_channel",
+                        },
                         "text": "Channel post from bot updates",
                     },
                 },
@@ -1434,7 +1445,7 @@ def test_x_web_collector_builds_posts_and_reply_snapshots(tmp_path: Path, monkey
                     "retweet_count": "0",
                     "like_count": "2",
                     "view_count": "80",
-                }
+                },
             ],
         },
     )

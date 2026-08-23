@@ -46,28 +46,36 @@ def sanitize_export_frame(frame: pl.DataFrame) -> pl.DataFrame:
         base_type = dtype.base_type() if hasattr(dtype, "base_type") else None
         if base_type is pl.List:
             expressions.append(
-                pl.col(column_name).map_elements(
+                pl.col(column_name)
+                .map_elements(
                     json_list_cell,
                     return_dtype=pl.String,
-                ).alias(column_name)
+                )
+                .alias(column_name)
             )
         elif base_type is pl.Struct:
             expressions.append(
-                pl.col(column_name).map_elements(
+                pl.col(column_name)
+                .map_elements(
                     json_object_cell,
                     return_dtype=pl.String,
-                ).alias(column_name)
+                )
+                .alias(column_name)
             )
         else:
             expressions.append(pl.col(column_name))
     return frame.select(expressions)
 
 
-def merge_existing_export(path: Path, current: pl.DataFrame, keys: list[str], editable_columns: list[str]) -> pl.DataFrame:
+def merge_existing_export(
+    path: Path, current: pl.DataFrame, keys: list[str], editable_columns: list[str]
+) -> pl.DataFrame:
     if not path.exists():
         return current
     existing = pl.read_csv(path)
-    editable_columns = [column for column in editable_columns if column in existing.columns and column in current.columns]
+    editable_columns = [
+        column for column in editable_columns if column in existing.columns and column in current.columns
+    ]
     if not editable_columns:
         return current
     merged = current.join(existing.select([*keys, *editable_columns]), on=keys, how="left", suffix="_existing")
@@ -111,4 +119,3 @@ def json_object_cell(value: Any) -> str:
     if isinstance(value, pl.Series):
         return json.dumps(value.to_list(), ensure_ascii=False)
     return json.dumps(value, ensure_ascii=False)
-

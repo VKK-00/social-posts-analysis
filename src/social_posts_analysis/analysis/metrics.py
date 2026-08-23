@@ -100,7 +100,9 @@ def compute_support_metrics(
     return pl.concat(scoped_frames, how="diagonal_relaxed").with_columns(pl.lit(run_id).alias("run_id"))
 
 
-def _aggregate_scope(df: pl.DataFrame, group_columns: list[str], scope_type: str, static_scope_id: str | None) -> pl.DataFrame:
+def _aggregate_scope(
+    df: pl.DataFrame, group_columns: list[str], scope_type: str, static_scope_id: str | None
+) -> pl.DataFrame:
     z = pl.lit(_WILSON_Z)
     grouped = (
         df.group_by(group_columns)
@@ -113,11 +115,7 @@ def _aggregate_scope(df: pl.DataFrame, group_columns: list[str], scope_type: str
         .with_columns(
             (
                 pl.col("support_count")
-                / (
-                    pl.col("support_count")
-                    + pl.col("oppose_count")
-                    + pl.col("neutral_count")
-                ).clip(lower_bound=1)
+                / (pl.col("support_count") + pl.col("oppose_count") + pl.col("neutral_count")).clip(lower_bound=1)
             ).alias("support_ratio"),
             (pl.col("support_count") - pl.col("oppose_count")).alias("net_support"),
             pl.lit(scope_type).alias("scope_type"),
@@ -141,7 +139,9 @@ def _aggregate_scope(df: pl.DataFrame, group_columns: list[str], scope_type: str
             ((pl.col("_p") + z * z / (2.0 * pl.col("_decided"))) / pl.col("_denominator")).alias("_centre"),
             (
                 (z / pl.col("_denominator"))
-                * (pl.col("_p") * (1.0 - pl.col("_p")) / pl.col("_decided") + z * z / (4.0 * pl.col("_decided") ** 2)).sqrt()
+                * (
+                    pl.col("_p") * (1.0 - pl.col("_p")) / pl.col("_decided") + z * z / (4.0 * pl.col("_decided") ** 2)
+                ).sqrt()
             ).alias("_margin"),
         )
         .with_columns(

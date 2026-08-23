@@ -20,9 +20,33 @@ def test_language_detector_fallbacks() -> None:
 def test_support_metrics_aggregate_comment_scope() -> None:
     stance = pl.DataFrame(
         [
-            {"item_type": "comment", "item_id": "c1", "side_id": "side_a", "label": "support", "confidence": 0.8, "model_name": "x", "run_id": "r1"},
-            {"item_type": "comment", "item_id": "c2", "side_id": "side_a", "label": "oppose", "confidence": 0.8, "model_name": "x", "run_id": "r1"},
-            {"item_type": "comment", "item_id": "c3", "side_id": "side_a", "label": "neutral", "confidence": 0.8, "model_name": "x", "run_id": "r1"},
+            {
+                "item_type": "comment",
+                "item_id": "c1",
+                "side_id": "side_a",
+                "label": "support",
+                "confidence": 0.8,
+                "model_name": "x",
+                "run_id": "r1",
+            },
+            {
+                "item_type": "comment",
+                "item_id": "c2",
+                "side_id": "side_a",
+                "label": "oppose",
+                "confidence": 0.8,
+                "model_name": "x",
+                "run_id": "r1",
+            },
+            {
+                "item_type": "comment",
+                "item_id": "c3",
+                "side_id": "side_a",
+                "label": "neutral",
+                "confidence": 0.8,
+                "model_name": "x",
+                "run_id": "r1",
+            },
         ]
     )
     memberships = pl.DataFrame(
@@ -34,16 +58,36 @@ def test_support_metrics_aggregate_comment_scope() -> None:
     )
     comments = pl.DataFrame(
         [
-            {"comment_id": "c1", "parent_post_id": "p1", "parent_entity_type": "post", "parent_entity_id": "p1", "origin_post_id": "p1"},
-            {"comment_id": "c2", "parent_post_id": "p2", "parent_entity_type": "propagation", "parent_entity_id": "prop1", "origin_post_id": "p1"},
-            {"comment_id": "c3", "parent_post_id": "p1", "parent_entity_type": "post", "parent_entity_id": "p1", "origin_post_id": "p1"},
+            {
+                "comment_id": "c1",
+                "parent_post_id": "p1",
+                "parent_entity_type": "post",
+                "parent_entity_id": "p1",
+                "origin_post_id": "p1",
+            },
+            {
+                "comment_id": "c2",
+                "parent_post_id": "p2",
+                "parent_entity_type": "propagation",
+                "parent_entity_id": "prop1",
+                "origin_post_id": "p1",
+            },
+            {
+                "comment_id": "c3",
+                "parent_post_id": "p1",
+                "parent_entity_type": "post",
+                "parent_entity_id": "p1",
+                "origin_post_id": "p1",
+            },
         ]
     )
 
     metrics = compute_support_metrics(stance, memberships, comments, "r1")
     global_row = metrics.filter((pl.col("scope_type") == "global") & (pl.col("side_id") == "side_a")).to_dicts()[0]
     origin_plus_row = metrics.filter(
-        (pl.col("scope_type") == "origin_plus_propagations") & (pl.col("scope_id") == "p1") & (pl.col("side_id") == "side_a")
+        (pl.col("scope_type") == "origin_plus_propagations")
+        & (pl.col("scope_id") == "p1")
+        & (pl.col("side_id") == "side_a")
     ).to_dicts()[0]
 
     assert global_row["support_count"] == 1
@@ -91,15 +135,7 @@ def test_openai_compatible_llm_provider_parses_json(monkeypatch) -> None:
             return None
 
         def json(self):  # noqa: ANN201
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"label":"support","confidence":0.91}'
-                        }
-                    }
-                ]
-            }
+            return {"choices": [{"message": {"content": '{"label":"support","confidence":0.91}'}}]}
 
     monkeypatch.setattr(provider.client, "post", lambda *args, **kwargs: Response())
     side = SideConfig(side_id="side_a", name="Actor A")

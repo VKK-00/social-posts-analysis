@@ -168,7 +168,9 @@ class ReportService:
         support_metrics = compute_support_metrics(stance_labels, comment_memberships, comments, run_id)
 
         if memberships.is_empty():
-            cluster_counts = pl.DataFrame(schema={"item_type": pl.String, "cluster_id": pl.String, "member_count": pl.Int64})
+            cluster_counts = pl.DataFrame(
+                schema={"item_type": pl.String, "cluster_id": pl.String, "member_count": pl.Int64}
+            )
         else:
             cluster_counts = memberships.group_by(["item_type", "cluster_id"]).agg(pl.len().alias("member_count"))
         clusters_with_counts = (
@@ -199,12 +201,16 @@ class ReportService:
             else []
         )
         propagation_cluster_rows = (
-            clusters_with_counts.filter(pl.col("item_type") == "propagation").sort("member_count", descending=True).to_dicts()
+            clusters_with_counts.filter(pl.col("item_type") == "propagation")
+            .sort("member_count", descending=True)
+            .to_dicts()
             if not clusters_with_counts.is_empty()
             else []
         )
         comment_cluster_rows = (
-            clusters_with_counts.filter(pl.col("item_type") == "comment").sort("member_count", descending=True).to_dicts()
+            clusters_with_counts.filter(pl.col("item_type") == "comment")
+            .sort("member_count", descending=True)
+            .to_dicts()
             if not clusters_with_counts.is_empty()
             else []
         )
@@ -245,7 +251,11 @@ class ReportService:
         reply_depth_summary = self._reply_depth_summary(comments)
         warnings = self._data_quality_warnings(run_id, posts, propagations, comments, analysis_runs, collection_runs)
 
-        platform = collection_runs["platform"][0] if collection_runs.height and "platform" in collection_runs.columns else self.config.source.platform
+        platform = (
+            collection_runs["platform"][0]
+            if collection_runs.height and "platform" in collection_runs.columns
+            else self.config.source.platform
+        )
         source_name = (
             collection_runs["source_name"][0]
             if collection_runs.height and "source_name" in collection_runs.columns
@@ -259,7 +269,13 @@ class ReportService:
         source_type = (
             collection_runs["source_type"][0]
             if collection_runs.height and "source_type" in collection_runs.columns
-            else ("channel" if platform == "telegram" else "account" if platform in {"x", "threads", "instagram"} else "page")
+            else (
+                "channel"
+                if platform == "telegram"
+                else "account"
+                if platform in {"x", "threads", "instagram"}
+                else "page"
+            )
         )
         source_run_ids: list[str] = []
         if collection_runs.height and "source_run_ids" in collection_runs.columns:
@@ -268,19 +284,29 @@ class ReportService:
                 source_run_ids = raw_source_run_ids.to_list()
             else:
                 source_run_ids = list(raw_source_run_ids or [])
-        source_run_count = int(collection_runs["source_run_count"][0]) if collection_runs.height and "source_run_count" in collection_runs.columns else 1
+        source_run_count = (
+            int(collection_runs["source_run_count"][0])
+            if collection_runs.height and "source_run_count" in collection_runs.columns
+            else 1
+        )
         origin_support = (
-            support_metrics.filter(pl.col("scope_type") == "origin_post").sort("support_count", descending=True).to_dicts()
+            support_metrics.filter(pl.col("scope_type") == "origin_post")
+            .sort("support_count", descending=True)
+            .to_dicts()
             if not support_metrics.is_empty()
             else []
         )
         origin_plus_support = (
-            support_metrics.filter(pl.col("scope_type") == "origin_plus_propagations").sort("support_count", descending=True).to_dicts()
+            support_metrics.filter(pl.col("scope_type") == "origin_plus_propagations")
+            .sort("support_count", descending=True)
+            .to_dicts()
             if not support_metrics.is_empty()
             else []
         )
         propagation_support = (
-            support_metrics.filter(pl.col("scope_type") == "propagation").sort("support_count", descending=True).to_dicts()
+            support_metrics.filter(pl.col("scope_type") == "propagation")
+            .sort("support_count", descending=True)
+            .to_dicts()
             if not support_metrics.is_empty()
             else []
         )
@@ -306,7 +332,9 @@ class ReportService:
             "source_run_trace": self._rows_to_frame(source_run_trace),
             "source_warnings": self._rows_to_frame(source_warnings),
         }
-        telegram_summary = self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
+        telegram_summary = (
+            self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
+        )
         x_summary = self._x_summary(origin_posts, comments) if platform == "x" else None
         threads_summary = self._threads_summary(origin_posts, comments) if platform == "threads" else None
         instagram_summary = self._instagram_summary(origin_posts, comments) if platform == "instagram" else None
@@ -337,7 +365,9 @@ class ReportService:
             "coverage_gaps": coverage_gaps,
             "propagation_coverage_gaps": propagation_coverage_gaps,
             "top_propagated_items": top_propagated_items,
-            "propagation_comments": propagation_comments.head(20).to_dicts() if not propagation_comments.is_empty() else [],
+            "propagation_comments": propagation_comments.head(20).to_dicts()
+            if not propagation_comments.is_empty()
+            else [],
             "top_supportive_comments": top_supportive_comments,
             "top_critical_comments": top_critical_comments,
             "reply_depth_summary": reply_depth_summary,
@@ -376,44 +406,51 @@ class ReportService:
             if new_label:
                 label_updates[(row.get("item_type", ""), target_cluster or row.get("cluster_id", ""))] = new_label
             if new_description:
-                description_updates[(row.get("item_type", ""), target_cluster or row.get("cluster_id", ""))] = new_description
+                description_updates[(row.get("item_type", ""), target_cluster or row.get("cluster_id", ""))] = (
+                    new_description
+                )
 
         if mapping:
             memberships = memberships.with_columns(
-                pl.struct(["item_type", "cluster_id"]).map_elements(
+                pl.struct(["item_type", "cluster_id"])
+                .map_elements(
                     lambda row: mapping.get((row["item_type"], row["cluster_id"]), row["cluster_id"]),
                     return_dtype=pl.String,
-                ).alias("cluster_id")
+                )
+                .alias("cluster_id")
             )
             clusters = clusters.with_columns(
-                pl.struct(["item_type", "cluster_id"]).map_elements(
+                pl.struct(["item_type", "cluster_id"])
+                .map_elements(
                     lambda row: mapping.get((row["item_type"], row["cluster_id"]), row["cluster_id"]),
                     return_dtype=pl.String,
-                ).alias("cluster_id")
-            )
-            clusters = (
-                clusters.group_by(["item_type", "cluster_id", "run_id"])
-                .agg(
-                    pl.col("label").first().alias("label"),
-                    pl.col("description").first().alias("description"),
-                    pl.col("top_keywords").first().alias("top_keywords"),
-                    pl.col("exemplar_ids").first().alias("exemplar_ids"),
                 )
+                .alias("cluster_id")
+            )
+            clusters = clusters.group_by(["item_type", "cluster_id", "run_id"]).agg(
+                pl.col("label").first().alias("label"),
+                pl.col("description").first().alias("description"),
+                pl.col("top_keywords").first().alias("top_keywords"),
+                pl.col("exemplar_ids").first().alias("exemplar_ids"),
             )
 
         if label_updates:
             clusters = clusters.with_columns(
-                pl.struct(["item_type", "cluster_id", "label"]).map_elements(
+                pl.struct(["item_type", "cluster_id", "label"])
+                .map_elements(
                     lambda row: label_updates.get((row["item_type"], row["cluster_id"]), row["label"]),
                     return_dtype=pl.String,
-                ).alias("label")
+                )
+                .alias("label")
             )
         if description_updates:
             clusters = clusters.with_columns(
-                pl.struct(["item_type", "cluster_id", "description"]).map_elements(
+                pl.struct(["item_type", "cluster_id", "description"])
+                .map_elements(
                     lambda row: description_updates.get((row["item_type"], row["cluster_id"]), row["description"]),
                     return_dtype=pl.String,
-                ).alias("description")
+                )
+                .alias("description")
             )
         return clusters, memberships
 
@@ -438,17 +475,23 @@ class ReportService:
 
         if label_map:
             stance_labels = stance_labels.with_columns(
-                pl.struct(["item_type", "item_id", "side_id", "label"]).map_elements(
+                pl.struct(["item_type", "item_id", "side_id", "label"])
+                .map_elements(
                     lambda row: label_map.get((row["item_type"], row["item_id"], row["side_id"]), row["label"]),
                     return_dtype=pl.String,
-                ).alias("label")
+                )
+                .alias("label")
             )
         if confidence_map:
             stance_labels = stance_labels.with_columns(
-                pl.struct(["item_type", "item_id", "side_id", "confidence"]).map_elements(
-                    lambda row: confidence_map.get((row["item_type"], row["item_id"], row["side_id"]), row["confidence"]),
+                pl.struct(["item_type", "item_id", "side_id", "confidence"])
+                .map_elements(
+                    lambda row: confidence_map.get(
+                        (row["item_type"], row["item_id"], row["side_id"]), row["confidence"]
+                    ),
                     return_dtype=pl.Float64,
-                ).alias("confidence")
+                )
+                .alias("confidence")
             )
         return stance_labels
 
@@ -524,7 +567,9 @@ class ReportService:
             else pl.DataFrame(schema={"parent_entity_id": pl.String, "extracted_comment_count": pl.Int64})
         )
         joined = (
-            propagations.select("propagation_id", "message", "comments_count", "permalink", "propagation_kind", "origin_post_id")
+            propagations.select(
+                "propagation_id", "message", "comments_count", "permalink", "propagation_kind", "origin_post_id"
+            )
             .join(extracted_counts, left_on="propagation_id", right_on="parent_entity_id", how="left")
             .with_columns(pl.col("extracted_comment_count").fill_null(0))
             .with_columns((pl.col("comments_count") - pl.col("extracted_comment_count")).alias("comment_gap"))
@@ -671,8 +716,12 @@ class ReportService:
                 "collector": collection_runs["collector"][0] if "collector" in collection_runs.columns else None,
                 "mode": collection_runs["mode"][0] if "mode" in collection_runs.columns else None,
                 "status": collection_runs["status"][0] if "status" in collection_runs.columns else None,
-                "fallback_used": bool(collection_runs["fallback_used"][0]) if "fallback_used" in collection_runs.columns else False,
-                "warning_count": int(collection_runs["warning_count"][0]) if "warning_count" in collection_runs.columns else 0,
+                "fallback_used": bool(collection_runs["fallback_used"][0])
+                if "fallback_used" in collection_runs.columns
+                else False,
+                "warning_count": int(collection_runs["warning_count"][0])
+                if "warning_count" in collection_runs.columns
+                else 0,
             }
         ]
 
@@ -716,7 +765,11 @@ class ReportService:
                 warnings.extend(manifest.get("warnings", []))
         if collection_runs.height and bool(collection_runs["fallback_used"][0]):
             warnings.append("Collector fallback was used for this run.")
-        if collection_runs.height and "source_run_count" in collection_runs.columns and int(collection_runs["source_run_count"][0]) > 1:
+        if (
+            collection_runs.height
+            and "source_run_count" in collection_runs.columns
+            and int(collection_runs["source_run_count"][0]) > 1
+        ):
             warnings.append(
                 f"Normalized snapshot merged {int(collection_runs['source_run_count'][0])} recent collection runs."
             )
@@ -727,9 +780,13 @@ class ReportService:
             and "discussion_linked" in collection_runs.columns
             and not bool(collection_runs["discussion_linked"][0])
         ):
-            warnings.append("Telegram source has no linked discussion chat; stance/support metrics are based on posts only where comments are absent.")
+            warnings.append(
+                "Telegram source has no linked discussion chat; stance/support metrics are based on posts only where comments are absent."
+            )
         if not propagations.is_empty() and comments.filter(pl.col("parent_entity_type") == "propagation").is_empty():
-            warnings.append("Propagation instances were detected, but no comments were extracted from propagated copies in this run.")
+            warnings.append(
+                "Propagation instances were detected, but no comments were extracted from propagated copies in this run."
+            )
         if comments.filter(pl.col("message").fill_null("").str.len_chars() == 0).height > 0:
             warnings.append("Some comments were collected without message text.")
         if posts.filter(pl.col("message").fill_null("").str.len_chars() == 0).height > 0:

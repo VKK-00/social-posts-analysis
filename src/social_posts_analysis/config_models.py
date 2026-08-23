@@ -44,9 +44,7 @@ def _parse_date_boundary(raw_value: str | None, *, end_of_day: bool, field: str)
         else:
             parsed = datetime.fromisoformat(f"{value}T23:59:59+00:00" if end_of_day else f"{value}T00:00:00+00:00")
     except ValueError as exc:
-        raise ValueError(
-            f"date_range.{field} must be YYYY-MM-DD or an ISO-8601 datetime, got '{raw_value}'."
-        ) from exc
+        raise ValueError(f"date_range.{field} must be YYYY-MM-DD or an ISO-8601 datetime, got '{raw_value}'.") from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
@@ -261,12 +259,14 @@ class CollectorConfig(BaseModel):
 class EmbeddingProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["auto", "openai_compatible", "hash"] = "auto"
+    kind: Literal["auto", "openai_compatible", "hash", "sentence_transformers"] = "auto"
     base_url: str | None = Field(default_factory=lambda: env_value("EMBEDDING_BASE_URL"))
     api_key: str | None = Field(default_factory=lambda: env_value("EMBEDDING_API_KEY"))
     model: str = "text-embedding-3-small"
     dimension: int = 256
     timeout_seconds: float = 45.0
+    # Local model directory or HuggingFace name for sentence_transformers kind.
+    local_model: str | None = None
 
 
 class LLMProviderConfig(BaseModel):

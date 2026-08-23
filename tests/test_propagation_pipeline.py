@@ -47,13 +47,17 @@ def _test_config(*, platform: str, source: dict[str, str], collector: dict[str, 
     )
 
 
-def _run_pipeline(tmp_path: Path, *, run_id: str, config: ProjectConfig, manifest: CollectionManifest) -> tuple[ProjectPaths, pl.DataFrame, pl.DataFrame, dict[str, object]]:
+def _run_pipeline(
+    tmp_path: Path, *, run_id: str, config: ProjectConfig, manifest: CollectionManifest
+) -> tuple[ProjectPaths, pl.DataFrame, pl.DataFrame, dict[str, object]]:
     root = tmp_path / "project"
     paths = ProjectPaths.from_config(root, config)
     paths.ensure()
     run_dir = paths.run_raw_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "manifest.json").write_text(json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8")
+    (run_dir / "manifest.json").write_text(
+        json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     NormalizationService(config, paths).run(run_id=run_id)
     propagations = pl.read_parquet(paths.processed_root / "propagations.parquet").filter(pl.col("run_id") == run_id)
@@ -162,10 +166,14 @@ def test_normalize_and_report_include_propagation_scopes(tmp_path: Path) -> None
     assert context["propagation_comments"][0]["parent_entity_id"] == "facebook:page_1:post_2"
 
     origin_plus_row = next(
-        row for row in context["origin_plus_support"] if row["scope_id"] == "facebook:page_1:post_1" and row["side_id"] == "actor_a"
+        row
+        for row in context["origin_plus_support"]
+        if row["scope_id"] == "facebook:page_1:post_1" and row["side_id"] == "actor_a"
     )
     propagation_row = next(
-        row for row in context["propagation_support"] if row["scope_id"] == "facebook:page_1:post_2" and row["side_id"] == "actor_a"
+        row
+        for row in context["propagation_support"]
+        if row["scope_id"] == "facebook:page_1:post_2" and row["side_id"] == "actor_a"
     )
 
     assert origin_plus_row["support_count"] == 1
@@ -267,12 +275,11 @@ def test_telegram_forward_comments_are_counted_in_propagation_and_origin_plus_sc
     assert context["propagation_summary"]["extracted_comments"] == 1
     assert context["propagation_comments"][0]["comment_id"] == "tg_prop_comment_1"
     assert any(
-        row["scope_id"] == "telegram:example_channel:11" and row["oppose_count"] == 1 for row in context["propagation_support"]
+        row["scope_id"] == "telegram:example_channel:11" and row["oppose_count"] == 1
+        for row in context["propagation_support"]
     )
     assert any(
-        row["scope_id"] == "telegram:example_channel:10"
-        and row["support_count"] == 1
-        and row["oppose_count"] == 1
+        row["scope_id"] == "telegram:example_channel:10" and row["support_count"] == 1 and row["oppose_count"] == 1
         for row in context["origin_plus_support"]
     )
 
@@ -368,12 +375,11 @@ def test_x_quote_replies_are_separated_from_origin_replies(tmp_path: Path) -> No
     assert propagation_comment["parent_entity_id"] == "x:example_account:201"
     assert context["propagation_comments"][0]["propagation_kind"] == "quote"
     assert any(
-        row["scope_id"] == "x:example_account:201" and row["oppose_count"] == 1 for row in context["propagation_support"]
+        row["scope_id"] == "x:example_account:201" and row["oppose_count"] == 1
+        for row in context["propagation_support"]
     )
     assert any(
-        row["scope_id"] == "x:example_account:200"
-        and row["support_count"] == 1
-        and row["oppose_count"] == 1
+        row["scope_id"] == "x:example_account:200" and row["support_count"] == 1 and row["oppose_count"] == 1
         for row in context["origin_plus_support"]
     )
 
@@ -440,7 +446,9 @@ def test_x_api_warning_trace_reaches_report_context(tmp_path: Path) -> None:
         collector="x_api",
         mode="x_api",
         status="partial",
-        warnings=["X API quote thread for post x:example_account:201 reports reply_count 2, but search returned no replies."],
+        warnings=[
+            "X API quote thread for post x:example_account:201 reports reply_count 2, but search returned no replies."
+        ],
         source=SourceSnapshot(
             platform="x",
             source_id="example_account",

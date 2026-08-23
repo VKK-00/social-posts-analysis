@@ -128,7 +128,9 @@ def open_authenticated_web_runtime(
                 )
                 launch_user_data_dir = temp_profile_dir
 
-            args = [f"--profile-directory={profile_directory}"] if profile_directory and strategy.use_profile_arg else []
+            args = (
+                [f"--profile-directory={profile_directory}"] if profile_directory and strategy.use_profile_arg else []
+            )
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(launch_user_data_dir),
                 channel=strategy.channel,
@@ -142,7 +144,9 @@ def open_authenticated_web_runtime(
                 warnings.append(snapshot_warning)
             if strategy.label != "requested":
                 warnings.append(f"Authenticated browser launch fallback used: {strategy.label}.")
-            return WebCollectorRuntime(browser=None, context=context, temp_profile_dir=temp_profile_dir, warnings=warnings)
+            return WebCollectorRuntime(
+                browser=None, context=context, temp_profile_dir=temp_profile_dir, warnings=warnings
+            )
         except Exception as exc:
             if temp_profile_dir is not None:
                 shutil.rmtree(temp_profile_dir, ignore_errors=True)
@@ -224,7 +228,9 @@ def resolve_authenticated_user_data_dir(
         raise CollectorUnavailableError(f"{missing_user_data_error_prefix}: {resolved_path}")
     profile_directory = authenticated_browser.profile_directory
     if profile_directory and not (resolved_path / profile_directory).exists():
-        raise CollectorUnavailableError(f"Browser profile directory does not exist: {resolved_path / profile_directory}")
+        raise CollectorUnavailableError(
+            f"Browser profile directory does not exist: {resolved_path / profile_directory}"
+        )
     return resolved_path
 
 
@@ -247,9 +253,7 @@ def prepare_temp_profile_directory(
     best_effort: bool,
 ) -> Path:
     target_parent = (
-        Path(os.path.expandvars(temp_root_dir)).expanduser()
-        if temp_root_dir
-        else Path(tempfile.gettempdir())
+        Path(os.path.expandvars(temp_root_dir)).expanduser() if temp_root_dir else Path(tempfile.gettempdir())
     )
     target_parent.mkdir(parents=True, exist_ok=True)
     temp_profile_dir = Path(tempfile.mkdtemp(prefix=prefix, dir=str(target_parent)))
@@ -288,7 +292,9 @@ def copy_directory_best_effort(source_directory: Path, target_directory: Path) -
                 continue
 
 
-def scroll_page(page: Any, *, max_scrolls: int, wait_after_scroll_ms: int, passes: int | None = None, wheel_y: int = 2600) -> None:
+def scroll_page(
+    page: Any, *, max_scrolls: int, wait_after_scroll_ms: int, passes: int | None = None, wheel_y: int = 2600
+) -> None:
     for _ in range(passes or max_scrolls):
         page.mouse.wheel(0, wheel_y)
         page.wait_for_timeout(wait_after_scroll_ms)

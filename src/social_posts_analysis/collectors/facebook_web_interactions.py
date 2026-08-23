@@ -120,7 +120,8 @@ def expand_comment_threads(
             stable_rounds = 0
         last_article_count = max(last_article_count, article_count)
         enough_comments = (
-            article_count >= min(max(target_comment_count, 0) + 1, comment_article_limit(target_comment_count, aggressive))
+            article_count
+            >= min(max(target_comment_count, 0) + 1, comment_article_limit(target_comment_count, aggressive))
             if target_comment_count
             else False
         )

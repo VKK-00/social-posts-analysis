@@ -100,6 +100,12 @@ class AnalysisService:
         detector = LanguageDetector(self.config.analysis.languages)
         providers = build_providers(self.config.providers.embeddings, self.config.providers.llm)
         cache_store = AnalysisCacheStore(self.config, self.paths)
+        # Local providers (sentence-transformers) expose their true dimension
+        # and model name so cache keys and empty-input shapes stay consistent.
+        embedding_dimension = (
+            getattr(providers.embeddings, "dimension", None) or self.config.providers.embeddings.dimension
+        )
+        provider_model_override = getattr(providers.embeddings, "model_name", None)
         clusterer = NarrativeClusterer(
             llm_provider=providers.llm,
             exemplar_count=self.config.analysis.exemplar_count,
@@ -120,21 +126,24 @@ class AnalysisService:
             provider_name=providers.embeddings.name,
             embed_many=providers.embeddings.embed_texts,
             batch_size=self.config.analysis.batch_size,
-            dimension=self.config.providers.embeddings.dimension,
+            dimension=embedding_dimension,
+            model_override=provider_model_override,
         )
         propagation_embeddings = cache_store.embedding_matrix(
             propagation_items,
             provider_name=providers.embeddings.name,
             embed_many=providers.embeddings.embed_texts,
             batch_size=self.config.analysis.batch_size,
-            dimension=self.config.providers.embeddings.dimension,
+            dimension=embedding_dimension,
+            model_override=provider_model_override,
         )
         comment_embeddings = cache_store.embedding_matrix(
             comment_items,
             provider_name=providers.embeddings.name,
             embed_many=providers.embeddings.embed_texts,
             batch_size=self.config.analysis.batch_size,
-            dimension=self.config.providers.embeddings.dimension,
+            dimension=embedding_dimension,
+            model_override=provider_model_override,
         )
 
         post_clusters, post_memberships = clusterer.cluster_items("post", post_items, post_embeddings, resolved_run_id)
@@ -232,7 +241,9 @@ class AnalysisService:
             ).alias("item_id"),
             pl.lit(item_type).alias("item_type"),
             pl.col("message").fill_null("").alias("text"),
-            pl.col("parent_post_id").fill_null("").alias("parent_post_id") if item_type == "comment" else pl.lit("").alias("parent_post_id"),
+            pl.col("parent_post_id").fill_null("").alias("parent_post_id")
+            if item_type == "comment"
+            else pl.lit("").alias("parent_post_id"),
         )
         rows = rows.filter(pl.col("text").str.len_chars() > 0)
         if limit:
@@ -315,8 +326,6 @@ class AnalysisService:
         try:
             for table_name, path in table_paths.items():
                 path_str = path.as_posix().replace("'", "''")
-                connection.execute(
-                    f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM read_parquet('{path_str}')"
-                )
+                connection.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM read_parquet('{path_str}')")
         finally:
             connection.close()

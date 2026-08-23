@@ -6,7 +6,9 @@ from social_posts_analysis.contracts import CollectionManifest, SourceSnapshot
 from social_posts_analysis.pipeline import CollectionService, PipelineRunner
 
 
-def test_pipeline_runner_passes_exact_collection_run_ids_to_normalization(project_config, project_paths, monkeypatch) -> None:
+def test_pipeline_runner_passes_exact_collection_run_ids_to_normalization(
+    project_config, project_paths, monkeypatch
+) -> None:
     manifests = [
         CollectionManifest(
             run_id="20260411T120000Z-p01",
@@ -78,7 +80,9 @@ def test_pipeline_runner_passes_exact_collection_run_ids_to_normalization(projec
     assert Path(result["report_markdown"]).exists()
 
 
-def test_collection_service_reuses_existing_manifest_for_same_request(project_config, project_paths, monkeypatch) -> None:
+def test_collection_service_reuses_existing_manifest_for_same_request(
+    project_config, project_paths, monkeypatch
+) -> None:
     existing_manifest = CollectionManifest(
         run_id="20260411T121500Z",
         collected_at="2026-04-11T12:15:00+00:00",
@@ -121,7 +125,9 @@ def test_collection_service_reuses_existing_manifest_for_same_request(project_co
     assert manifest.requested_date_end == "2026-04-10"
 
 
-def test_collection_service_recollects_when_existing_manifest_request_differs(project_config, project_paths, monkeypatch) -> None:
+def test_collection_service_recollects_when_existing_manifest_request_differs(
+    project_config, project_paths, monkeypatch
+) -> None:
     existing_manifest = CollectionManifest(
         run_id="20260411T121500Z",
         collected_at="2026-04-11T12:15:00+00:00",

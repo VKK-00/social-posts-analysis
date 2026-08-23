@@ -412,10 +412,7 @@ def propagation_metadata(
     if "shared a post" not in joined_text and "shared a memory" not in joined_text and "shared" not in joined_text:
         return None, None, None, None
     origin_permalink = (
-        payload.get("shared_permalink")
-        or payload.get("origin_permalink")
-        or payload.get("url")
-        or post_permalink
+        payload.get("shared_permalink") or payload.get("origin_permalink") or payload.get("url") or post_permalink
     )
     origin_external_id = extract_numeric_media_id(origin_permalink or "") or None
     origin_post_id = f"facebook:origin:{origin_external_id}" if origin_external_id else None

@@ -16,7 +16,12 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-@pytest.mark.skipif(os.getenv("SPA_RUN_AUTH_RUNTIME_LIVE") != "1", reason="manual authenticated browser live test")
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(os.getenv("SPA_RUN_AUTH_RUNTIME_LIVE") != "1", reason="manual authenticated browser live test"),
+]
+
+
 def test_open_web_runtime_authenticated_live() -> None:
     config = AuthenticatedBrowserConfig(
         enabled=True,

@@ -23,8 +23,8 @@ def test_project_config_accepts_authenticated_browser_settings() -> None:
                 "url": "https://www.facebook.com/example",
             },
             "sides": [{"side_id": "a", "name": "A"}],
-                "collector": {
-                    "mode": "web",
+            "collector": {
+                "mode": "web",
                 "multi_pass_runs": 2,
                 "wait_between_passes_seconds": 0.5,
                 "public_web": {

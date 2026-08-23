@@ -26,7 +26,9 @@ class ThreadsWebCollector(BaseCollector):
         self.settings = config.collector.threads_web
         self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
-            raise CollectorUnavailableError("Threads web collector is disabled in config.collector.threads_web.enabled.")
+            raise CollectorUnavailableError(
+                "Threads web collector is disabled in config.collector.threads_web.enabled."
+            )
         ensure_playwright_available("Threads web collector requires the playwright package and browser install.")
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
@@ -45,12 +47,16 @@ class ThreadsWebCollector(BaseCollector):
                 source_path = raw_store.write_json("threads_web_source", "profile_feed", payload)
                 source_name = payload.get("source_name") or self.config.source.source_name or self._source_reference()
                 source_id = payload.get("source_id") or self._source_reference()
-                posts = self._build_posts_from_payload(payload, source_id=source_id, source_name=source_name, raw_store=raw_store)
+                posts = self._build_posts_from_payload(
+                    payload, source_id=source_id, source_name=source_name, raw_store=raw_store
+                )
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
                     replies = self._collect_replies_for_post(context=runtime.context, post=post, raw_store=raw_store)
                     updated_posts.append(
-                        post.model_copy(update={"comments": replies, "comments_count": max(post.comments_count, len(replies))})
+                        post.model_copy(
+                            update={"comments": replies, "comments_count": max(post.comments_count, len(replies))}
+                        )
                     )
             finally:
                 runtime.close()
@@ -116,13 +122,17 @@ class ThreadsWebCollector(BaseCollector):
                     author=AuthorSnapshot(
                         author_id=item.get("author_username") or source_id,
                         name=item.get("author_name") or source_name,
-                        profile_url=f"https://www.threads.net/@{item.get('author_username')}" if item.get("author_username") else profile_url_from_name(source_id),
+                        profile_url=f"https://www.threads.net/@{item.get('author_username')}"
+                        if item.get("author_username")
+                        else profile_url_from_name(source_id),
                     ),
                 )
             )
         return posts
 
-    def _collect_replies_for_post(self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
+    def _collect_replies_for_post(
+        self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore
+    ) -> list[CommentSnapshot]:
         if not post.permalink:
             return []
         page = context.new_page()
@@ -144,7 +154,11 @@ class ThreadsWebCollector(BaseCollector):
                 continue
             comment_id = f"{post.post_id}:comment:{status_id}"
             parent_native_id = str(item.get("reply_to_status_id") or self._native_status_id(post.post_id))
-            parent_comment_id = comment_id_map.get(parent_native_id) if parent_native_id != self._native_status_id(post.post_id) else None
+            parent_comment_id = (
+                comment_id_map.get(parent_native_id)
+                if parent_native_id != self._native_status_id(post.post_id)
+                else None
+            )
             depth = depth_map.get(parent_comment_id, -1) + 1 if parent_comment_id else 0
             raw_path = raw_store.write_json("threads_web_reply_items", slugify(comment_id), item)
             snapshot = CommentSnapshot(
@@ -164,7 +178,9 @@ class ThreadsWebCollector(BaseCollector):
                 author=AuthorSnapshot(
                     author_id=item.get("author_username"),
                     name=item.get("author_name"),
-                    profile_url=f"https://www.threads.net/@{item.get('author_username')}" if item.get("author_username") else None,
+                    profile_url=f"https://www.threads.net/@{item.get('author_username')}"
+                    if item.get("author_username")
+                    else None,
                 ),
             )
             comments.append(snapshot)
@@ -291,7 +307,9 @@ class ThreadsWebCollector(BaseCollector):
             return self.config.source.source_id
         if self.config.source.url:
             return self.config.source.url.rstrip("/").split("@")[-1].split("/")[-1]
-        raise CollectorUnavailableError("Threads web collector requires source.url, source.source_name, or source.source_id.")
+        raise CollectorUnavailableError(
+            "Threads web collector requires source.url, source.source_name, or source.source_id."
+        )
 
     def _within_range(self, raw_value: str | None) -> bool:
         return self.range_filter.contains(raw_value, allow_missing=False)

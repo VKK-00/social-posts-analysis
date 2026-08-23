@@ -37,9 +37,13 @@ class ThreadsApiCollector(BaseCollector):
         self.settings = config.collector.threads_api
         self.range_filter = RangeFilter.from_strings(config.date_range.start, config.date_range.end)
         if not self.settings.enabled:
-            raise CollectorUnavailableError("Threads API collector is disabled in config.collector.threads_api.enabled.")
+            raise CollectorUnavailableError(
+                "Threads API collector is disabled in config.collector.threads_api.enabled."
+            )
         if not self.settings.access_token:
-            raise CollectorUnavailableError("Threads API collector requires THREADS_ACCESS_TOKEN or collector.threads_api.access_token.")
+            raise CollectorUnavailableError(
+                "Threads API collector requires THREADS_ACCESS_TOKEN or collector.threads_api.access_token."
+            )
         self.client = httpx.Client(timeout=self.settings.timeout_seconds)
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
@@ -71,7 +75,11 @@ class ThreadsApiCollector(BaseCollector):
                     continue
                 post = self._build_post_snapshot(item=item, source_snapshot=source_snapshot, raw_store=raw_store)
                 replies = self._collect_replies(post_snapshot=post, raw_store=raw_store)
-                posts.append(post.model_copy(update={"comments": replies, "comments_count": max(post.comments_count, len(replies))}))
+                posts.append(
+                    post.model_copy(
+                        update={"comments": replies, "comments_count": max(post.comments_count, len(replies))}
+                    )
+                )
 
         return CollectionManifest(
             run_id=run_id,
@@ -88,7 +96,9 @@ class ThreadsApiCollector(BaseCollector):
     def _resolve_source(self) -> dict[str, Any]:
         if self.config.source.source_id:
             return self._get_json(f"/{self.config.source.source_id}", params={"fields": self.PROFILE_FIELDS})
-        return self._get_json("/profile_lookup", params={"username": self._source_reference(), "fields": self.PROFILE_FIELDS})
+        return self._get_json(
+            "/profile_lookup", params={"username": self._source_reference(), "fields": self.PROFILE_FIELDS}
+        )
 
     def _iter_user_threads_pages(self, source_id: str) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"fields": self.MEDIA_FIELDS, "limit": min(max(10, self.settings.page_size), 100)}
@@ -115,7 +125,9 @@ class ThreadsApiCollector(BaseCollector):
                 continue
             comment_id = f"{post_snapshot.post_id}:comment:{item['id']}"
             parent_native_id = str(item.get("replied_to") or "")
-            parent_comment_id = reply_map.get(parent_native_id) if parent_native_id and parent_native_id != media_id else None
+            parent_comment_id = (
+                reply_map.get(parent_native_id) if parent_native_id and parent_native_id != media_id else None
+            )
             depth = depth_map.get(parent_comment_id, -1) + 1 if parent_comment_id else 0
             raw_path = raw_store.write_json("threads_reply_items", slugify(comment_id), item)
             snapshot = CommentSnapshot(
@@ -188,7 +200,9 @@ class ThreadsApiCollector(BaseCollector):
             return self.config.source.source_name.lstrip("@")
         if self.config.source.url:
             return self.config.source.url.rstrip("/").split("@")[-1].split("/")[-1]
-        raise CollectorUnavailableError("Threads API collector requires source.source_name, source.source_id, or source.url.")
+        raise CollectorUnavailableError(
+            "Threads API collector requires source.source_name, source.source_id, or source.url."
+        )
 
     @staticmethod
     def _source_url(source_data: dict[str, Any]) -> str | None:

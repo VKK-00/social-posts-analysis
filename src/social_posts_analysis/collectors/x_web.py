@@ -51,9 +51,13 @@ class XWebCollector(BaseCollector):
                 profile_payload = self._extract_profile_payload(page)
                 source_path = raw_store.write_json("x_web_source", "profile_feed", profile_payload)
 
-                source_name = profile_payload.get("source_name") or self.config.source.source_name or self._source_reference()
+                source_name = (
+                    profile_payload.get("source_name") or self.config.source.source_name or self._source_reference()
+                )
                 source_id = profile_payload.get("source_id") or self._source_reference()
-                posts = self._build_posts_from_payload(profile_payload, source_id=source_id, source_name=source_name, raw_store=raw_store)
+                posts = self._build_posts_from_payload(
+                    profile_payload, source_id=source_id, source_name=source_name, raw_store=raw_store
+                )
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
                     replies = self._collect_replies_for_post(context=runtime.context, post=post, raw_store=raw_store)
@@ -62,7 +66,9 @@ class XWebCollector(BaseCollector):
                             f"X web detail page for {post.post_id} exposed reply counter {post.comments_count}, but no reply articles were visible."
                         )
                     updated_posts.append(
-                        post.model_copy(update={"comments": replies, "comments_count": max(post.comments_count, len(replies))})
+                        post.model_copy(
+                            update={"comments": replies, "comments_count": max(post.comments_count, len(replies))}
+                        )
                     )
             finally:
                 runtime.close()
@@ -142,14 +148,18 @@ class XWebCollector(BaseCollector):
                     author=AuthorSnapshot(
                         author_id=item.get("author_username") or source_id,
                         name=item.get("author_name") or source_name,
-                        profile_url=f"https://x.com/{item.get('author_username')}" if item.get("author_username") else self.config.source.url,
+                        profile_url=f"https://x.com/{item.get('author_username')}"
+                        if item.get("author_username")
+                        else self.config.source.url,
                     ),
                     comments=[],
                 )
             )
         return posts
 
-    def _collect_replies_for_post(self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
+    def _collect_replies_for_post(
+        self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore
+    ) -> list[CommentSnapshot]:
         if not post.permalink:
             return []
         page = context.new_page()
@@ -206,7 +216,9 @@ class XWebCollector(BaseCollector):
                     author=AuthorSnapshot(
                         author_id=item.get("author_username"),
                         name=item.get("author_name"),
-                        profile_url=f"https://x.com/{item.get('author_username')}" if item.get("author_username") else None,
+                        profile_url=f"https://x.com/{item.get('author_username')}"
+                        if item.get("author_username")
+                        else None,
                     ),
                 )
             )

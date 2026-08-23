@@ -207,7 +207,9 @@ class XApiCollector(BaseCollector):
                     continue
                 replies[tweet_id] = tweet_payload
 
-        ordered_replies = sorted(replies.values(), key=lambda item: (item.get("created_at") or "", str(item.get("id") or "")))
+        ordered_replies = sorted(
+            replies.values(), key=lambda item: (item.get("created_at") or "", str(item.get("id") or ""))
+        )
         tweet_id_to_comment_id: dict[str, str] = {}
         comment_depths: dict[str, int] = {}
         comment_snapshots: list[CommentSnapshot] = []
@@ -354,14 +356,10 @@ class XApiCollector(BaseCollector):
 
     def _build_includes(self, includes_payload: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
         users = {
-            str(user.get("id")): user
-            for user in includes_payload.get("users") or []
-            if user.get("id") is not None
+            str(user.get("id")): user for user in includes_payload.get("users") or [] if user.get("id") is not None
         }
         tweets = {
-            str(item.get("id")): item
-            for item in includes_payload.get("tweets") or []
-            if item.get("id") is not None
+            str(item.get("id")): item for item in includes_payload.get("tweets") or [] if item.get("id") is not None
         }
         media = {
             str(item.get("media_key")): item
@@ -392,7 +390,7 @@ class XApiCollector(BaseCollector):
         tweet_payload: dict[str, Any],
         include_media: dict[str, dict[str, Any]],
     ) -> list[MediaReference]:
-        media_keys = ((tweet_payload.get("attachments") or {}).get("media_keys") or [])
+        media_keys = (tweet_payload.get("attachments") or {}).get("media_keys") or []
         refs: list[MediaReference] = []
         for index, media_key in enumerate(media_keys, start=1):
             media_payload = include_media.get(str(media_key), {})
@@ -432,7 +430,9 @@ class XApiCollector(BaseCollector):
                 continue
             referenced_tweet = includes.get("tweets", {}).get(reference_id) or {}
             referenced_author_id = str(referenced_tweet.get("author_id") or "") or None
-            referenced_author = includes.get("users", {}).get(referenced_author_id or "") if referenced_author_id else None
+            referenced_author = (
+                includes.get("users", {}).get(referenced_author_id or "") if referenced_author_id else None
+            )
             if referenced_author_id:
                 origin_post_id = cls._post_id(referenced_author_id, reference_id)
             else:

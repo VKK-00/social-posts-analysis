@@ -141,8 +141,12 @@ def telegram_summary(posts: pl.DataFrame, comments: pl.DataFrame, collection_run
         "discussion_linked": discussion_linked,
         "filtered_service_message_count": filtered_service_message_count,
         "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-        "total_forwards": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
-        "total_reply_count": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
+        "total_forwards": int(posts["forwards"].fill_null(0).sum())
+        if "forwards" in posts.columns and posts.height
+        else 0,
+        "total_reply_count": int(posts["reply_count"].fill_null(0).sum())
+        if "reply_count" in posts.columns and posts.height
+        else 0,
         "reaction_breakdown": reaction_breakdown_summary(posts, comments),
     }
 
@@ -150,10 +154,16 @@ def telegram_summary(posts: pl.DataFrame, comments: pl.DataFrame, collection_run
 def x_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
     return {
         "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-        "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
+        "total_likes": int(posts["reactions"].fill_null(0).sum())
+        if "reactions" in posts.columns and posts.height
+        else 0,
         "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
-        "total_quotes": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
-        "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
+        "total_quotes": int(posts["forwards"].fill_null(0).sum())
+        if "forwards" in posts.columns and posts.height
+        else 0,
+        "total_replies": int(posts["reply_count"].fill_null(0).sum())
+        if "reply_count" in posts.columns and posts.height
+        else 0,
         "reaction_breakdown": reaction_breakdown_summary(posts, comments),
     }
 
@@ -161,17 +171,25 @@ def x_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
 def threads_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
     return {
         "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
-        "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
+        "total_likes": int(posts["reactions"].fill_null(0).sum())
+        if "reactions" in posts.columns and posts.height
+        else 0,
         "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
-        "total_quotes": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
-        "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
+        "total_quotes": int(posts["forwards"].fill_null(0).sum())
+        if "forwards" in posts.columns and posts.height
+        else 0,
+        "total_replies": int(posts["reply_count"].fill_null(0).sum())
+        if "reply_count" in posts.columns and posts.height
+        else 0,
         "reaction_breakdown": reaction_breakdown_summary(posts, comments),
     }
 
 
 def instagram_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any]:
     return {
-        "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
+        "total_likes": int(posts["reactions"].fill_null(0).sum())
+        if "reactions" in posts.columns and posts.height
+        else 0,
         "total_comments_visible": int(posts["comments_count"].fill_null(0).sum())
         if "comments_count" in posts.columns and posts.height
         else 0,
@@ -187,7 +205,9 @@ def propagation_summary(propagations: pl.DataFrame, comments: pl.DataFrame) -> d
     if propagations.is_empty():
         return None
     comment_counts = (
-        comments.filter(pl.col("parent_entity_type") == "propagation").group_by("parent_entity_id").agg(pl.len().alias("count"))
+        comments.filter(pl.col("parent_entity_type") == "propagation")
+        .group_by("parent_entity_id")
+        .agg(pl.len().alias("count"))
         if not comments.is_empty()
         else pl.DataFrame(schema={"parent_entity_id": pl.String, "count": pl.Int64})
     )

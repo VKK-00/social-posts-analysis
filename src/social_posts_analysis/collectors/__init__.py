@@ -1,2 +1,1 @@
 """Collector adapters."""
-

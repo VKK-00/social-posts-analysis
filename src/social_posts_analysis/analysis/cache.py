@@ -50,13 +50,13 @@ class AnalysisCacheStore:
     def stance_cache_path(self) -> Path:
         return self.paths.processed_root / "stance_cache.parquet"
 
-    def embedding_provider_key(self, provider_name: str) -> str:
+    def embedding_provider_key(self, provider_name: str, model_override: str | None = None) -> str:
         provider = self.config.providers.embeddings
         return "|".join(
             [
                 provider_name,
                 provider.kind,
-                provider.model,
+                model_override or provider.model,
                 str(provider.dimension),
                 provider.base_url or "",
             ]
@@ -107,11 +107,12 @@ class AnalysisCacheStore:
         embed_many: Any,
         batch_size: int,
         dimension: int,
+        model_override: str | None = None,
     ) -> np.ndarray:
         if not items:
             return np.zeros((0, dimension), dtype=float)
 
-        provider_key = self.embedding_provider_key(provider_name)
+        provider_key = self.embedding_provider_key(provider_name, model_override)
         cache_frame = self._load_cache_frame(self.embedding_cache_path, EMBEDDING_CACHE_SCHEMA)
         provider_rows = (
             cache_frame.filter(pl.col("provider_key") == provider_key)
@@ -119,8 +120,7 @@ class AnalysisCacheStore:
             else self._empty_cache_frame(EMBEDDING_CACHE_SCHEMA)
         )
         cached_embeddings = {
-            row["text_hash"]: np.array(row["embedding"], dtype=float)
-            for row in provider_rows.to_dicts()
+            row["text_hash"]: np.array(row["embedding"], dtype=float) for row in provider_rows.to_dicts()
         }
 
         unique_missing: list[tuple[str, str]] = []
@@ -177,10 +177,7 @@ class AnalysisCacheStore:
             if not cache_frame.is_empty()
             else self._empty_cache_frame(STANCE_CACHE_SCHEMA)
         )
-        cached_predictions = {
-            (row["text_hash"], row["side_id"]): row
-            for row in provider_rows.to_dicts()
-        }
+        cached_predictions = {(row["text_hash"], row["side_id"]): row for row in provider_rows.to_dicts()}
 
         missing_rows: list[dict[str, Any]] = []
         for item in items:

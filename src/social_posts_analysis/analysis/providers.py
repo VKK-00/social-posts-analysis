@@ -93,6 +93,51 @@ class HashEmbeddingProvider:
         return vector / norm
 
 
+class SentenceTransformerEmbeddingProvider:
+    """Local semantic embeddings via the optional sentence-transformers extra.
+
+    Install with ``uv sync --extra semantic`` (or ``pip install
+    social-posts-analysis[semantic]``). Deterministic for a fixed model, so
+    results are reproducible offline without any embedding API.
+    """
+
+    name = "sentence_transformers"
+
+    def __init__(self, config: EmbeddingProviderConfig) -> None:
+        try:
+            import sentence_transformers  # noqa: F401
+        except ImportError as exc:
+            raise ValueError(
+                "sentence_transformers embeddings require the 'semantic' extra: uv sync --extra dev --extra semantic"
+            ) from exc
+        self.config = config
+        model_name = config.local_model or config.model
+        # Default to a strong multilingual model when only the generic API
+        # model name is configured.
+        if model_name == "text-embedding-3-small":
+            model_name = "paraphrase-multilingual-MiniLM-L12-v2"
+        self._model_name = model_name
+        # Surfaced so the analysis cache key reflects the real local model.
+        self.model_name = model_name
+
+    @property
+    def dimension(self) -> int:
+        # MiniLM-class models produce 384 dims; the config value is used as a
+        # fallback hint for empty inputs and cache keys.
+        default_dimensions = {"paraphrase-multilingual-MiniLM-L12-v2": 384}
+        if self._model_name in default_dimensions:
+            return default_dimensions[self._model_name]
+        return self.config.dimension
+
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        from sentence_transformers import SentenceTransformer
+
+        if not texts:
+            return np.zeros((0, self.dimension))
+        model = SentenceTransformer(self._model_name)
+        return np.asarray(model.encode(texts, normalize_embeddings=True), dtype=float)
+
+
 class OpenAICompatibleEmbeddingProvider:
     name = "openai_compatible_embedding"
 
@@ -245,8 +290,10 @@ def build_providers(
     embedding_config: EmbeddingProviderConfig,
     llm_config: LLMProviderConfig,
 ) -> ProvidersBundle:
-    if embedding_config.kind == "openai_compatible":
-        embedding_provider: EmbeddingProvider = OpenAICompatibleEmbeddingProvider(embedding_config)
+    if embedding_config.kind == "sentence_transformers":
+        embedding_provider: EmbeddingProvider = SentenceTransformerEmbeddingProvider(embedding_config)
+    elif embedding_config.kind == "openai_compatible":
+        embedding_provider = OpenAICompatibleEmbeddingProvider(embedding_config)
     elif embedding_config.kind == "hash":
         embedding_provider = HashEmbeddingProvider(dimension=embedding_config.dimension)
     else:
@@ -268,4 +315,3 @@ def build_providers(
         )
 
     return ProvidersBundle(embeddings=embedding_provider, llm=llm_provider)
-

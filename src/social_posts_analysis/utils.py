@@ -84,4 +84,3 @@ def parse_compact_number(value: str | None) -> int:
     suffix = (match.group(2) or "").upper()
     multiplier = {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[suffix]
     return int(base_value * multiplier)
-

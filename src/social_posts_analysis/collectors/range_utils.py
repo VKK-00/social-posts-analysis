@@ -11,7 +11,9 @@ def parse_configured_datetime(raw_value: str | None, *, end_of_day: bool) -> dat
         if "T" in raw_value:
             parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
         else:
-            parsed = datetime.fromisoformat(f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00")
+            parsed = datetime.fromisoformat(
+                f"{raw_value}T23:59:59+00:00" if end_of_day else f"{raw_value}T00:00:00+00:00"
+            )
     except ValueError:
         return None
     if parsed.tzinfo is None:

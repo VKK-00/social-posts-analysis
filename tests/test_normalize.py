@@ -53,11 +53,7 @@ def test_normalization_merges_recent_runs_into_snapshot(project_root: Path, proj
             "source_collector": "meta_api",
             "depth": 0,
             "raw_path": "data/raw/20260402T121500Z/api_comment_items/comment_2.json",
-            "author": {
-                "author_id": "user_3",
-                "name": "Late User",
-                "profile_url": None
-            }
+            "author": {"author_id": "user_3", "name": "Late User", "profile_url": None},
         }
     )
     manifest["posts"][0]["comments_count"] = 3
@@ -82,7 +78,9 @@ def test_normalization_merges_recent_runs_into_snapshot(project_root: Path, proj
     assert collection_runs["source_run_count"][0] == 2
 
 
-def test_normalization_merge_recent_runs_does_not_mix_different_sources(project_root: Path, project_config, project_paths) -> None:
+def test_normalization_merge_recent_runs_does_not_mix_different_sources(
+    project_root: Path, project_config, project_paths
+) -> None:
     source_dir = project_root / "data/raw/20260402T120000Z"
 
     foreign_dir = project_root / "data/raw/20260402T121000Z"
