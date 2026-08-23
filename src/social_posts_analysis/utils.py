@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,40 @@ def read_json(path: Path) -> Any:
 def stable_id(*parts: str) -> str:
     joined = "::".join(parts)
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+
+
+def pseudonymize_author_id(author_id: str | None) -> str | None:
+    """Return a stable, non-reversible pseudonym for a third-party author id."""
+    if not author_id:
+        return None
+    return f"anon-{hashlib.sha256(author_id.encode('utf-8')).hexdigest()[:16]}"
+
+
+def handle_rate_limit_response(
+    response: Any,
+    *,
+    default_seconds: float = 2.0,
+    max_seconds: float = 30.0,
+) -> float | None:
+    """Sleep when an API responds with HTTP 429, honouring ``Retry-After``.
+
+    Callers keep their existing tenacity retry loops; this only adds the
+    polite wait the rate-limiting server asked for before the next attempt.
+    Returns the delay slept (or ``None`` when the response was not a 429).
+    """
+    status_code = getattr(response, "status_code", None)
+    if status_code != 429:
+        return None
+    headers = getattr(response, "headers", None) or {}
+    raw_delay = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        delay = float(str(raw_delay))
+    except (TypeError, ValueError):
+        delay = default_seconds
+    delay = max(0.0, min(delay, max_seconds))
+    if delay > 0:
+        time.sleep(delay)
+    return delay
 
 
 def slugify(value: str) -> str:

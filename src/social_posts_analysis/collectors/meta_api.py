@@ -16,7 +16,7 @@ from social_posts_analysis.contracts import (
     SourceSnapshot,
 )
 from social_posts_analysis.raw_store import RawSnapshotStore
-from social_posts_analysis.utils import slugify, utc_now_iso
+from social_posts_analysis.utils import handle_rate_limit_response, slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
 
@@ -255,6 +255,7 @@ class MetaApiCollector(BaseCollector):
         # parameter so it cannot leak into URLs, proxy logs, or raw payloads.
         headers = {"Authorization": f"Bearer {self.settings.access_token}"}
         response = self.client.get(url, params=params, headers=headers)
+        handle_rate_limit_response(response)
         response.raise_for_status()
         payload = response.json()
         if "error" in payload:

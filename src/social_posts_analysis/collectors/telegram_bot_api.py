@@ -17,7 +17,7 @@ from social_posts_analysis.contracts import (
     SourceSnapshot,
 )
 from social_posts_analysis.raw_store import RawSnapshotStore
-from social_posts_analysis.utils import slugify, utc_now_iso
+from social_posts_analysis.utils import handle_rate_limit_response, slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
 
@@ -223,6 +223,7 @@ class TelegramBotApiCollector(BaseCollector):
     def _get_json(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self.settings.base_url.rstrip('/')}/bot{self.settings.bot_token}{endpoint}"
         response = self.client.get(url, params=params)
+        handle_rate_limit_response(response)
         response.raise_for_status()
         return response.json()
 

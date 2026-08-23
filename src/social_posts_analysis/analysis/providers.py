@@ -10,10 +10,36 @@ import httpx
 import numpy as np
 
 from social_posts_analysis.config import EmbeddingProviderConfig, LLMProviderConfig, SideConfig
+from social_posts_analysis.utils import handle_rate_limit_response
 
 
 def _join_api_url(base_url: str, suffix: str) -> str:
     return base_url.rstrip("/") + suffix
+
+
+def _post_json_with_rate_limit(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: Any,
+    attempts: int = 3,
+) -> dict[str, Any]:
+    """POST JSON and return the parsed body with basic 429 politeness.
+
+    On HTTP 429 the ``Retry-After`` header is honoured before the next
+    attempt; everything else raises immediately.
+    """
+    response: httpx.Response | None = None
+    for attempt in range(max(attempts, 1)):
+        response = client.post(url, headers=headers, json=json_body)
+        if getattr(response, "status_code", None) == 429 and attempt < max(attempts, 1) - 1:
+            handle_rate_limit_response(response, default_seconds=2.0, max_seconds=20.0)
+            continue
+        break
+    assert response is not None
+    response.raise_for_status()
+    return response.json()
 
 
 class EmbeddingProvider(Protocol):
@@ -81,13 +107,12 @@ class OpenAICompatibleEmbeddingProvider:
             return np.zeros((0, self.config.dimension))
         assert self.config.base_url is not None
         assert self.config.api_key is not None
-        response = self.client.post(
+        payload = _post_json_with_rate_limit(
+            self.client,
             _join_api_url(self.config.base_url, "/embeddings"),
             headers={"Authorization": f"Bearer {self.config.api_key}"},
-            json={"model": self.config.model, "input": texts},
+            json_body={"model": self.config.model, "input": texts},
         )
-        response.raise_for_status()
-        payload = response.json()
         embeddings = [item["embedding"] for item in payload.get("data", [])]
         return np.array(embeddings, dtype=float)
 
@@ -189,17 +214,16 @@ class OpenAICompatibleLLMProvider:
     def _chat_json(self, messages: list[dict[str, str]], fallback: dict[str, Any]) -> dict[str, Any]:
         assert self.config.base_url is not None
         assert self.config.api_key is not None
-        response = self.client.post(
+        payload = _post_json_with_rate_limit(
+            self.client,
             _join_api_url(self.config.base_url, "/chat/completions"),
             headers={"Authorization": f"Bearer {self.config.api_key}"},
-            json={
+            json_body={
                 "model": self.config.model,
                 "temperature": self.config.temperature,
                 "messages": messages,
             },
         )
-        response.raise_for_status()
-        payload = response.json()
         content = payload["choices"][0]["message"]["content"]
         try:
             return json.loads(content)

@@ -24,6 +24,28 @@ from social_posts_analysis.paths import ProjectPaths
 from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import make_run_id
 
+# Platform → collector-mode → collector classes. "_default" is used when the
+# configured collector.mode does not name a platform-specific API mode.
+_PLATFORM_COLLECTOR_REGISTRY: dict[str, dict[str, tuple[type[Any], ...]]] = {
+    "telegram": {
+        "mtproto": (TelegramMtprotoCollector,),
+        "bot_api": (TelegramBotApiCollector,),
+        "_default": (TelegramWebCollector,),
+    },
+    "x": {
+        "x_api": (XApiCollector,),
+        "_default": (XWebCollector,),
+    },
+    "threads": {
+        "threads_api": (ThreadsApiCollector,),
+        "_default": (ThreadsWebCollector,),
+    },
+    "instagram": {
+        "instagram_graph_api": (InstagramGraphApiCollector,),
+        "_default": (InstagramWebCollector,),
+    },
+}
+
 
 class CollectionService:
     def __init__(self, config: ProjectConfig, paths: ProjectPaths) -> None:
@@ -83,25 +105,17 @@ class CollectionService:
         raise RuntimeError("All configured collectors failed: " + "; ".join(warnings))
 
     def _build_collectors(self) -> list[BaseCollector]:
-        if self.config.source.platform == "telegram":
-            if self.config.collector.mode == "mtproto":
-                return [TelegramMtprotoCollector(self.config)]
-            if self.config.collector.mode == "bot_api":
-                return [TelegramBotApiCollector(self.config)]
-            return [TelegramWebCollector(self.config)]
-        if self.config.source.platform == "x":
-            if self.config.collector.mode == "x_api":
-                return [XApiCollector(self.config)]
-            return [XWebCollector(self.config)]
-        if self.config.source.platform == "threads":
-            if self.config.collector.mode == "threads_api":
-                return [ThreadsApiCollector(self.config)]
-            return [ThreadsWebCollector(self.config)]
-        if self.config.source.platform == "instagram":
-            if self.config.collector.mode == "instagram_graph_api":
-                return [InstagramGraphApiCollector(self.config)]
-            return [InstagramWebCollector(self.config)]
+        platform = self.config.source.platform
+        mode = self.config.collector.mode
 
+        registry_entry = _PLATFORM_COLLECTOR_REGISTRY.get(platform)
+        if registry_entry is not None:
+            return [
+                collector_class(self.config)
+                for collector_class in registry_entry.get(mode, registry_entry["_default"])
+            ]
+
+        # Facebook keeps the hybrid API/web fallback chain.
         mode = self.config.collector.mode
         collector_classes: list[type[Any]]
         if mode == "api":

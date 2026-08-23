@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -366,3 +367,214 @@ def test_raw_snapshot_store_overwrite_is_atomic(tmp_path: Path) -> None:
 
     assert first == second
     assert json.loads(first.read_text(encoding="utf-8"))["version"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 8. Wilson score interval for support metrics (metrics.py)
+# ---------------------------------------------------------------------------
+
+
+def test_wilson_interval_basic_properties() -> None:
+    from social_posts_analysis.analysis.metrics import wilson_interval
+
+    low, high = wilson_interval(7, 10)
+    assert 0.0 < low < 0.7 < high < 1.0
+    # Zero sample -> degenerate interval.
+    assert wilson_interval(0, 0) == (0.0, 0.0)
+    # All successes still leaves a finite upper bound below 1 for n>0.
+    all_success_low, all_success_high = wilson_interval(100, 100)
+    assert all_success_low > 0.9
+    assert all_success_high <= 1.0
+
+
+def test_support_metrics_include_wilson_bounds() -> None:
+    from social_posts_analysis.analysis.metrics import compute_support_metrics
+
+    stance = pl.DataFrame(
+        {
+            "item_type": ["comment"] * 4,
+            "item_id": [f"c{index}" for index in range(4)],
+            "side_id": ["s"] * 4,
+            "label": ["support", "support", "support", "oppose"],
+            "confidence": [0.9] * 4,
+            "model_name": ["m"] * 4,
+            "run_id": ["r"] * 4,
+        }
+    )
+    result = compute_support_metrics(stance, pl.DataFrame(), pl.DataFrame(), "r")
+
+    row = result.row(0, named=True)
+    assert row["support_count"] == 3
+    assert row["oppose_count"] == 1
+    assert abs(row["support_ratio"] - 3 / 4) < 1e-9
+    # The Wilson interval must contain the point estimate and be honest about
+    # small-sample uncertainty.
+    assert row["support_ratio_low"] < row["support_ratio"] < row["support_ratio_high"]
+    assert row["support_ratio_low"] > 0.3
+
+
+# ---------------------------------------------------------------------------
+# 9. Author pseudonymization (normalization/records.py)
+# ---------------------------------------------------------------------------
+
+
+def _manifest_with_commenter() -> Any:
+    from social_posts_analysis.contracts import (
+        AuthorSnapshot,
+        CollectionManifest,
+        CommentSnapshot,
+        PostSnapshot,
+        SourceSnapshot,
+    )
+
+    commenter = AuthorSnapshot(author_id="user-777", name="Real Name", profile_url="https://fb.com/user-777")
+    comment = CommentSnapshot(
+        comment_id="c1",
+        platform="facebook",
+        parent_post_id="p1",
+        message="Коментар",
+        source_collector="facebook_web",
+        author=commenter,
+    )
+    post_author = AuthorSnapshot(author_id="page-1", name="Page Name", profile_url=None)
+    post = PostSnapshot(
+        post_id="p1",
+        platform="facebook",
+        source_id="page-1",
+        message="Пост",
+        source_collector="facebook_web",
+        author=post_author,
+        comments=[comment],
+    )
+    source = SourceSnapshot(
+        platform="facebook",
+        source_id="page-1",
+        source_name="Page Name",
+        source_collector="facebook_web",
+    )
+    return CollectionManifest(
+        run_id="run-x",
+        collected_at="2026-04-01T00:00:00+00:00",
+        collector="facebook_web",
+        mode="web",
+        source=source,
+        posts=[post],
+    )
+
+
+def test_pseudonymize_authors_replaces_identity_but_keeps_joins() -> None:
+    from social_posts_analysis.normalization.records import build_table_records
+
+    manifest = _manifest_with_commenter()
+
+    anon = build_table_records(manifest, ["run-x"], pseudonymize_authors=True)
+
+    anon_comment = anon["comments"][0]
+    assert anon_comment["author_id"].startswith("anon-")
+    # Posts keep their (hashed) author id so joins to authors still resolve.
+    assert anon["posts"][0]["author_id"].startswith("anon-")
+    # No third-party ids, names or profile URLs survive in the anonymized
+    # tables; the analysed source itself stays identifiable by design.
+    author_ids = {row["author_id"] for row in anon["authors"]}
+    assert "user-777" not in author_ids
+    assert all(
+        row["name"] is None and row["profile_url"] is None for row in anon["authors"] if row["author_id"] != "page-1"
+    )
+    # Pseudonyms are stable across calls.
+    again = build_table_records(manifest, ["run-x"], pseudonymize_authors=True)
+    assert again["comments"][0]["author_id"] == anon_comment["author_id"]
+
+    plain = build_table_records(manifest, ["run-x"], pseudonymize_authors=False)
+    assert plain["comments"][0]["author_id"] == "user-777"
+    commenter_row = next(row for row in plain["authors"] if row["author_id"] == "user-777")
+    assert commenter_row["name"] == "Real Name"
+
+
+def test_pseudonymization_flag_defaults_to_off() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {"platform": "telegram", "source_name": "example_channel"},
+            "sides": [{"side_id": "side_a", "name": "Actor A"}],
+            "collector": {
+                "mode": "mtproto",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {"enabled": True, "session_file": ".sessions/x", "api_id": 1, "api_hash": "h"},
+            },
+        }
+    )
+    assert config.normalization.pseudonymize_authors is False
+
+
+# ---------------------------------------------------------------------------
+# 10. Rate-limit handling helper (utils.py + providers.py)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int | None = None, retry_after: str | None = None) -> None:
+        self._status_code = status_code
+        self.headers = {"Retry-After": retry_after} if retry_after is not None else {}
+
+    @property
+    def status_code(self) -> int | None:
+        return self._status_code
+
+
+def test_handle_rate_limit_response_sleeps_on_429(monkeypatch) -> None:
+    from social_posts_analysis.utils import handle_rate_limit_response
+
+    slept: list[float] = []
+    monkeypatch.setattr("social_posts_analysis.utils.time.sleep", lambda seconds: slept.append(seconds))
+
+    assert handle_rate_limit_response(_FakeResponse(status_code=200)) is None
+    assert handle_rate_limit_response(_FakeResponse(status_code=429, retry_after="7")) == 7.0
+    assert slept == [7.0]
+
+    # Missing Retry-After falls back to the default; huge values are capped.
+    assert handle_rate_limit_response(_FakeResponse(status_code=429), default_seconds=2.0) == 2.0
+    assert handle_rate_limit_response(_FakeResponse(status_code=429, retry_after="999"), max_seconds=30.0) == 30.0
+
+
+class _SideStub:
+    side_id = "side_a"
+    name = "Actor A"
+    aliases: list[str] = []
+
+    @property
+    def all_names(self) -> list[str]:
+        return ["actor a"]
+
+
+def test_openai_compatible_provider_retries_on_429(monkeypatch) -> None:
+    from social_posts_analysis.analysis.providers import OpenAICompatibleLLMProvider
+    from social_posts_analysis.config import LLMProviderConfig
+
+    provider_config = LLMProviderConfig(kind="openai_compatible", base_url="https://api.example.com", api_key="k")
+    provider = OpenAICompatibleLLMProvider(provider_config)
+
+    class RateLimitedThenOkClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, url, headers=None, json=None):  # noqa: A002, ANN001
+            self.calls += 1
+            response = SimpleNamespace()
+            response.headers = {"Retry-After": "0"}
+            if self.calls == 1:
+                response.status_code = 429
+            else:
+                response.status_code = 200
+                response.raise_for_status = lambda: None
+                response.json = lambda: {
+                    "choices": [{"message": {"content": '{"label": "support", "confidence": 0.8}'}}]
+                }
+            return response
+
+    client = RateLimitedThenOkClient()
+    monkeypatch.setattr(provider, "client", client)
+    monkeypatch.setattr("social_posts_analysis.utils.time.sleep", lambda _seconds: None)
+
+    result = provider.classify_stance("текст", _SideStub())
+    assert client.calls == 2
+    assert result["label"] == "support"

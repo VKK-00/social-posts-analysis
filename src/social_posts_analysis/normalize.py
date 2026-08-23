@@ -52,7 +52,11 @@ class NormalizationService:
 
         manifests = load_manifests(self.paths, resolved_source_run_ids)
         manifest = merge_manifests(resolved_run_id, manifests)
-        table_records = build_table_records(manifest, resolved_source_run_ids)
+        table_records = build_table_records(
+            manifest,
+            resolved_source_run_ids,
+            pseudonymize_authors=self.config.normalization.pseudonymize_authors,
+        )
 
         outputs = {
             table_name: persist_table(self.paths, table_name, records)

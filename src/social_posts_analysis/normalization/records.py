@@ -4,9 +4,33 @@ from typing import Any
 
 from social_posts_analysis.contracts import CollectionManifest
 from social_posts_analysis.propagation import build_propagation_edge, build_propagation_record, resolve_comment_scope
+from social_posts_analysis.utils import pseudonymize_author_id
 
 
-def build_table_records(manifest: CollectionManifest, source_run_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+def _author_fields(
+    author_id: str | None,
+    name: str | None,
+    profile_url: str | None,
+    *,
+    pseudonymize: bool,
+) -> tuple[str | None, str | None, str | None]:
+    """Return (author_id, name, profile_url), optionally pseudonymized.
+
+    Pseudonyms are stable hashes of the platform author id, so joins across
+    posts/comments/authors tables keep working while real identities are
+    removed from the exported tables.
+    """
+    if not pseudonymize:
+        return author_id, name, profile_url
+    return pseudonymize_author_id(author_id), None, None
+
+
+def build_table_records(
+    manifest: CollectionManifest,
+    source_run_ids: list[str],
+    *,
+    pseudonymize_authors: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
     posts_records: list[dict[str, Any]] = []
     propagation_records: list[dict[str, Any]] = []
     propagation_edges: list[dict[str, Any]] = []
@@ -27,6 +51,16 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
         )
 
     for post in manifest.posts:
+        post_author_id = (
+            _author_fields(
+                post.author.author_id,
+                post.author.name,
+                post.author.profile_url,
+                pseudonymize=pseudonymize_authors,
+            )[0]
+            if post.author
+            else None
+        )
         posts_records.append(
             {
                 "post_id": post.post_id,
@@ -37,7 +71,7 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                 "origin_permalink": post.origin_permalink,
                 "propagation_kind": post.propagation_kind,
                 "is_propagation": post.is_propagation,
-                "author_id": post.author.author_id if post.author else None,
+                "author_id": post_author_id,
                 "created_at": post.created_at,
                 "message": post.message,
                 "permalink": post.permalink,
@@ -64,11 +98,17 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
             propagation_edges.append(propagation_edge)
 
         if post.author and post.author.author_id:
+            anon_id, anon_name, anon_url = _author_fields(
+                post.author.author_id,
+                post.author.name,
+                post.author.profile_url,
+                pseudonymize=pseudonymize_authors,
+            )
             authors.append(
                 {
-                    "author_id": post.author.author_id,
-                    "name": post.author.name,
-                    "profile_url": post.author.profile_url,
+                    "author_id": anon_id,
+                    "name": anon_name,
+                    "profile_url": anon_url,
                     "source_collector": post.source_collector,
                     "run_id": manifest.run_id,
                 }
@@ -89,6 +129,16 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
 
         for comment in post.comments:
             scope = resolve_comment_scope(post, comment)
+            comment_author_id = (
+                _author_fields(
+                    comment.author.author_id,
+                    comment.author.name,
+                    comment.author.profile_url,
+                    pseudonymize=pseudonymize_authors,
+                )[0]
+                if comment.author
+                else None
+            )
             comments_records.append(
                 {
                     "comment_id": comment.comment_id,
@@ -100,7 +150,7 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                     "reply_to_message_id": comment.reply_to_message_id,
                     "thread_root_post_id": comment.thread_root_post_id,
                     "origin_post_id": scope.origin_post_id,
-                    "author_id": comment.author.author_id if comment.author else None,
+                    "author_id": comment_author_id,
                     "created_at": comment.created_at,
                     "message": comment.message,
                     "depth": comment.depth,
@@ -127,11 +177,17 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                 }
             )
             if comment.author and comment.author.author_id:
+                anon_id, anon_name, anon_url = _author_fields(
+                    comment.author.author_id,
+                    comment.author.name,
+                    comment.author.profile_url,
+                    pseudonymize=pseudonymize_authors,
+                )
                 authors.append(
                     {
-                        "author_id": comment.author.author_id,
-                        "name": comment.author.name,
-                        "profile_url": comment.author.profile_url,
+                        "author_id": anon_id,
+                        "name": anon_name,
+                        "profile_url": anon_url,
                         "source_collector": comment.source_collector,
                         "run_id": manifest.run_id,
                     }

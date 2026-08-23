@@ -1,6 +1,36 @@
 from __future__ import annotations
 
+import math
+from typing import Any
+
 import polars as pl
+
+SUPPORT_METRICS_EMPTY_SCHEMA: dict[str, Any] = {
+    "scope_type": pl.String,
+    "scope_id": pl.String,
+    "side_id": pl.String,
+    "support_count": pl.Int64,
+    "oppose_count": pl.Int64,
+    "neutral_count": pl.Int64,
+    "unclear_count": pl.Int64,
+    "support_ratio": pl.Float64,
+    "support_ratio_low": pl.Float64,
+    "support_ratio_high": pl.Float64,
+    "net_support": pl.Int64,
+}
+
+_WILSON_Z = 1.959963984540054  # two-sided 95% normal quantile
+
+
+def wilson_interval(successes: float, total: float, z: float = _WILSON_Z) -> tuple[float, float]:
+    """Wilson score interval for a proportion; more honest than +-z*sqrt for small samples."""
+    if total <= 0:
+        return (0.0, 0.0)
+    p = successes / total
+    denominator = 1.0 + z * z / total
+    centre = (p + z * z / (2.0 * total)) / denominator
+    margin = (z / denominator) * math.sqrt(p * (1.0 - p) / total + z * z / (4.0 * total * total))
+    return (max(0.0, centre - margin), min(1.0, centre + margin))
 
 
 def compute_support_metrics(
@@ -10,36 +40,10 @@ def compute_support_metrics(
     run_id: str,
 ) -> pl.DataFrame:
     if "item_type" not in stance_labels.columns:
-        return pl.DataFrame(
-            schema={
-                "scope_type": pl.String,
-                "scope_id": pl.String,
-                "side_id": pl.String,
-                "support_count": pl.Int64,
-                "oppose_count": pl.Int64,
-                "neutral_count": pl.Int64,
-                "unclear_count": pl.Int64,
-                "support_ratio": pl.Float64,
-                "net_support": pl.Int64,
-                "run_id": pl.String,
-            }
-        )
+        return pl.DataFrame(schema=SUPPORT_METRICS_EMPTY_SCHEMA)
     comment_stance = stance_labels.filter(pl.col("item_type") == "comment")
     if comment_stance.is_empty():
-        return pl.DataFrame(
-            schema={
-                "scope_type": pl.String,
-                "scope_id": pl.String,
-                "side_id": pl.String,
-                "support_count": pl.Int64,
-                "oppose_count": pl.Int64,
-                "neutral_count": pl.Int64,
-                "unclear_count": pl.Int64,
-                "support_ratio": pl.Float64,
-                "net_support": pl.Int64,
-                "run_id": pl.String,
-            }
-        )
+        return pl.DataFrame(schema=SUPPORT_METRICS_EMPTY_SCHEMA)
 
     global_metrics = _aggregate_scope(comment_stance, ["side_id"], "global", "all")
     joined_comments = (
@@ -97,6 +101,7 @@ def compute_support_metrics(
 
 
 def _aggregate_scope(df: pl.DataFrame, group_columns: list[str], scope_type: str, static_scope_id: str | None) -> pl.DataFrame:
+    z = pl.lit(_WILSON_Z)
     grouped = (
         df.group_by(group_columns)
         .agg(
@@ -117,6 +122,33 @@ def _aggregate_scope(df: pl.DataFrame, group_columns: list[str], scope_type: str
             (pl.col("support_count") - pl.col("oppose_count")).alias("net_support"),
             pl.lit(scope_type).alias("scope_type"),
         )
+        # Wilson score interval (95%) for the support share among decided
+        # comments (support+oppose+neutral; unclear excluded by design).
+        .with_columns(
+            (
+                (pl.col("support_count") + pl.col("oppose_count") + pl.col("neutral_count"))
+                .clip(lower_bound=1)
+                .cast(pl.Float64)
+                .alias("_decided")
+            ),
+            pl.lit(scope_type).alias("scope_type"),
+        )
+        .with_columns(
+            (pl.col("support_count").cast(pl.Float64) / pl.col("_decided")).alias("_p"),
+            (1.0 + z * z / pl.col("_decided")).alias("_denominator"),
+        )
+        .with_columns(
+            ((pl.col("_p") + z * z / (2.0 * pl.col("_decided"))) / pl.col("_denominator")).alias("_centre"),
+            (
+                (z / pl.col("_denominator"))
+                * (pl.col("_p") * (1.0 - pl.col("_p")) / pl.col("_decided") + z * z / (4.0 * pl.col("_decided") ** 2)).sqrt()
+            ).alias("_margin"),
+        )
+        .with_columns(
+            (pl.col("_centre") - pl.col("_margin")).clip(lower_bound=0.0).alias("support_ratio_low"),
+            (pl.col("_centre") + pl.col("_margin")).clip(upper_bound=1.0).alias("support_ratio_high"),
+        )
+        .drop("_decided", "_p", "_denominator", "_centre", "_margin")
     )
     if static_scope_id is not None:
         grouped = grouped.with_columns(pl.lit(static_scope_id).alias("scope_id"))

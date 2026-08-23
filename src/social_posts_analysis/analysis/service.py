@@ -76,6 +76,8 @@ class AnalysisService:
             "neutral_count": pl.Int64,
             "unclear_count": pl.Int64,
             "support_ratio": pl.Float64,
+            "support_ratio_low": pl.Float64,
+            "support_ratio_high": pl.Float64,
             "net_support": pl.Int64,
             "run_id": pl.String,
         },

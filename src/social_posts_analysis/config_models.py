@@ -303,6 +303,11 @@ class NormalizationConfig(BaseModel):
 
     merge_recent_runs: int = 1
     source_run_ids: list[str] = Field(default_factory=list)
+    # When enabled, third-party authors (commenters, propagation authors) are
+    # stored under stable non-reversible pseudonyms; names and profile URLs
+    # are dropped so exported parquet/CSV tables are safer to share for
+    # research purposes. The analysed source itself stays identifiable.
+    pseudonymize_authors: bool = False
 
 
 class PathsConfig(BaseModel):
