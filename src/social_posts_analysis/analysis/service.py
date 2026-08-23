@@ -299,7 +299,14 @@ class AnalysisService:
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        return pl.read_parquet(path) if path.exists() else pl.DataFrame()
+        if path.exists():
+            return pl.read_parquet(path)
+        from social_posts_analysis.normalization.schemas import TABLE_SCHEMAS
+
+        schema = TABLE_SCHEMAS.get(table_name)
+        # A typed empty frame keeps downstream .filter/.col calls working when
+        # normalization has not run yet, instead of raising ColumnNotFoundError.
+        return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
 
     def _sync_duckdb(self, table_paths: dict[str, Path]) -> None:
         connection = duckdb.connect(str(self.paths.database_path))

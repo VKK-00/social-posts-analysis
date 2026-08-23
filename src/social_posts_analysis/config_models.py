@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -15,6 +16,40 @@ class DateRangeConfig(BaseModel):
 
     start: str | None = None
     end: str | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "DateRangeConfig":
+        parsed_start = _parse_date_boundary(self.start, end_of_day=False, field="start")
+        parsed_end = _parse_date_boundary(self.end, end_of_day=True, field="end")
+        if parsed_start is not None and parsed_end is not None and parsed_start > parsed_end:
+            raise ValueError(f"date_range.start ({self.start}) must not be after date_range.end ({self.end}).")
+        return self
+
+
+def _parse_date_boundary(raw_value: str | None, *, end_of_day: bool, field: str) -> datetime | None:
+    """Parse a configured date boundary or raise a clear config error.
+
+    Accepts ``YYYY-MM-DD`` and ISO-8601 datetimes. Previously an invalid
+    value silently parsed to ``None`` downstream, so a typo in the config
+    quietly disabled date filtering instead of failing fast.
+    """
+    if raw_value is None:
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    try:
+        if "T" in value:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            parsed = datetime.fromisoformat(f"{value}T23:59:59+00:00" if end_of_day else f"{value}T00:00:00+00:00")
+    except ValueError as exc:
+        raise ValueError(
+            f"date_range.{field} must be YYYY-MM-DD or an ISO-8601 datetime, got '{raw_value}'."
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 class TelegramSourceConfig(BaseModel):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -61,17 +62,42 @@ class AnalysisCacheStore:
             ]
         )
 
-    def llm_provider_key(self, provider_name: str) -> str:
-        provider = self.config.providers.llm
-        return "|".join(
+    def llm_provider_key(self, provider_name: str, sides: list[Any] | None = None) -> str:
+        base = "|".join(
             [
                 provider_name,
-                provider.kind,
-                provider.model,
-                str(provider.temperature),
-                provider.base_url or "",
+                self.config.providers.llm.kind,
+                self.config.providers.llm.model,
+                str(self.config.providers.llm.temperature),
+                self.config.providers.llm.base_url or "",
             ]
         )
+        sides_hash = self._sides_config_hash(sides if sides is not None else self.config.sides)
+        return f"{base}|{sides_hash}"
+
+    @staticmethod
+    def _sides_config_hash(sides: list[Any]) -> str:
+        """Hash the stance-relevant part of the sides configuration.
+
+        Changing names, aliases, or support/oppose keywords changes what the
+        LLM (and the heuristic fallback) actually classifies against, so it
+        must invalidate cached stance predictions.
+        """
+        payload = json.dumps(
+            [
+                {
+                    "side_id": side.side_id,
+                    "name": side.name,
+                    "aliases": list(side.aliases),
+                    "support_keywords": list(side.support_keywords),
+                    "oppose_keywords": list(side.oppose_keywords),
+                }
+                for side in sides
+            ],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def embedding_matrix(
         self,

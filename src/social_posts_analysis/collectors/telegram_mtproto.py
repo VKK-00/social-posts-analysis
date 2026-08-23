@@ -53,6 +53,8 @@ class TelegramMtprotoCollector(BaseCollector):
         except ImportError as exc:
             raise CollectorUnavailableError("Telegram MTProto collector requires the telethon package.") from exc
 
+        self._source_scan_truncated = False
+
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
         warnings: list[str] = []
         filtered_service_message_count = 0
@@ -77,7 +79,13 @@ class TelegramMtprotoCollector(BaseCollector):
                 discussion_chat_name = self._entity_title(discussion_entity)
 
             posts: list[PostSnapshot] = []
-            for message in self._iter_source_messages(client, source_entity):
+            source_messages = self._iter_source_messages(client, source_entity)
+            if self._source_scan_truncated:
+                warnings.append(
+                    "Telegram MTProto source scan hit its message bound before reaching date_range.start; "
+                    "the earliest posts of the requested period may be missing."
+                )
+            for message in source_messages:
                 if self._is_service_message(message):
                     filtered_service_message_count += 1
                     continue
@@ -182,16 +190,62 @@ class TelegramMtprotoCollector(BaseCollector):
             return None
 
     def _iter_source_messages(self, client: Any, source_entity: Any) -> list[Any]:
+        """Collect source messages within the configured date range.
+
+        With ``date_range.start`` configured, pages are walked backwards from
+        the range end until the range start is covered, so the beginning of
+        the requested period is no longer silently dropped when it falls
+        beyond the first page. The walk is bounded by a generous scan limit;
+        when the bound is hit before reaching the start, the flag is recorded
+        on the collector so ``collect()`` can surface an explicit warning.
+        """
+        self._source_scan_truncated = False
         reverse = False
-        messages = list(
-            client.iter_messages(
-                source_entity,
-                limit=self.settings.page_size,
-                offset_date=self._end_datetime(),
-                reverse=reverse,
+        page_size = max(self.settings.page_size, 1)
+        scan_bound = max(page_size * 10, 500)
+        start = self._start_datetime()
+        offset_date = self._end_datetime()
+
+        if start is None:
+            collected = list(
+                client.iter_messages(
+                    source_entity,
+                    limit=page_size,
+                    offset_date=offset_date,
+                    reverse=reverse,
+                )
             )
-        )
-        filtered = [message for message in messages if self._within_range(self._message_datetime(message))]
+        else:
+            collected = []
+            while len(collected) < scan_bound:
+                batch = list(
+                    client.iter_messages(
+                        source_entity,
+                        limit=min(page_size, scan_bound - len(collected)),
+                        offset_date=offset_date,
+                        reverse=reverse,
+                    )
+                )
+                if not batch:
+                    break
+                collected.extend(batch)
+                oldest = min(
+                    (
+                        value
+                        for value in (self._message_datetime(message) for message in batch)
+                        if value is not None
+                    ),
+                    default=None,
+                )
+                if oldest is not None and oldest <= start:
+                    break
+                if len(batch) < page_size:
+                    break
+                offset_date = oldest
+            else:
+                self._source_scan_truncated = True
+
+        filtered = [message for message in collected if self._within_range(self._message_datetime(message))]
         filtered.sort(key=lambda message: (self._message_datetime(message) or datetime.min.replace(tzinfo=UTC)), reverse=True)
         return filtered
 

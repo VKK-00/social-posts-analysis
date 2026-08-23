@@ -89,7 +89,7 @@ python -m playwright install chromium
 
 ## Configuration
 
-The checked-in [project.yaml](C:\Coding projects\facebook_posts_analysis\config\project.yaml) is a safe public template. For real runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`.
+The checked-in [project.yaml](config/project.yaml) is a safe public template. For real runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`.
 
 Path resolution for `paths.*` is intentionally simple:
 

@@ -86,7 +86,22 @@ def build_comment_snapshots(
 
         parent_comment_id = nesting_stack[-1]["comment_id"] if nesting_stack else None
         depth = len(nesting_stack)
-        comment_id = stable_id(post_id, payload_comment.get("permalink") or comment_text[:160])
+        # Prefer the permalink when present. Without it, hash all available
+        # identity signals (author + timestamp hint + text) so the same
+        # comment keeps a stable id across runs and identical texts from
+        # different authors do not collide.
+        permalink = payload_comment.get("permalink")
+        if permalink:
+            comment_id = stable_id(post_id, permalink)
+        else:
+            comment_id = stable_id(
+                post_id,
+                "comment",
+                author_name or "",
+                published_hint or "",
+                comment_text,
+                str(nesting_x),
+            )
         snapshot = CommentSnapshot(
             comment_id=comment_id,
             platform="facebook",

@@ -39,10 +39,7 @@ class MetaApiCollector(BaseCollector):
         source_ref = self.config.source.source_id or self._page_reference_from_url(self.config.source.url or "")
         source_payload = self._get_json(
             f"/{source_ref}",
-            params={
-                "fields": "id,name,link,about,fan_count,followers_count",
-                "access_token": self.settings.access_token,
-            },
+            params={"fields": "id,name,link,about,fan_count,followers_count"},
         )
         source_raw_path = raw_store.write_json("api_source", "source_metadata", source_payload)
         source_snapshot = SourceSnapshot(
@@ -190,7 +187,6 @@ class MetaApiCollector(BaseCollector):
                 "attachments{media_type,media,url,title,description,target}"
             ),
             "limit": self.settings.page_size,
-            "access_token": self.settings.access_token,
         }
         if self.config.date_range.start:
             params["since"] = self.config.date_range.start
@@ -222,7 +218,6 @@ class MetaApiCollector(BaseCollector):
         params: dict[str, Any] = {
             "fields": "id,message,created_time,from,permalink_url,comment_count,like_count",
             "limit": self.settings.page_size,
-            "access_token": self.settings.access_token,
         }
         pages: list[dict[str, Any]] = []
         current_params: dict[str, Any] | None = params
@@ -256,7 +251,10 @@ class MetaApiCollector(BaseCollector):
         full_url: str | None = None,
     ) -> dict[str, Any]:
         url = full_url or f"{self.settings.base_url.rstrip('/')}/{self.settings.api_version}{endpoint}"
-        response = self.client.get(url, params=params)
+        # Send the token via the Authorization header instead of a query
+        # parameter so it cannot leak into URLs, proxy logs, or raw payloads.
+        headers = {"Authorization": f"Bearer {self.settings.access_token}"}
+        response = self.client.get(url, params=params, headers=headers)
         response.raise_for_status()
         payload = response.json()
         if "error" in payload:

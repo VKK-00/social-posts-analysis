@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -32,6 +33,18 @@ class LLMProvider(Protocol):
         raise NotImplementedError
 
 
+def _stable_token_hash(token: str) -> int:
+    """Deterministic 64-bit hash of a token.
+
+    Python's built-in ``hash()`` is salted per process (PYTHONHASHSEED), so
+    using it for feature hashing makes embeddings irreproducible across runs
+    and silently poisons the on-disk embedding cache. This uses SHA-256
+    instead, which is stable across processes and machines.
+    """
+    digest = hashlib.sha256(token.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 class HashEmbeddingProvider:
     name = "hash_embedding"
 
@@ -45,8 +58,8 @@ class HashEmbeddingProvider:
     def _embed_one(self, text: str) -> np.ndarray:
         vector = np.zeros(self.dimension, dtype=float)
         for token in re.findall(r"[\w']+", text.lower()):
-            index = hash(token) % self.dimension
-            sign = 1.0 if hash(token + "::sign") % 2 else -1.0
+            index = _stable_token_hash(token) % self.dimension
+            sign = 1.0 if _stable_token_hash(token + "::sign") % 2 else -1.0
             vector[index] += sign
         norm = np.linalg.norm(vector)
         if norm == 0:
