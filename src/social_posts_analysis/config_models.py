@@ -299,6 +299,11 @@ class AnalysisConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     languages: list[str] = Field(default_factory=lambda: ["ru", "uk", "en"])
+    # "langdetect" (default; deterministic; no model download) or "fasttext"
+    # (lid.176 via the optional fasttext-langdetect package: faster and more
+    # accurate on short texts; downloads the model on first use). Both fall
+    # back to script/lexicon heuristics when their backend fails.
+    language_method: Literal["langdetect", "fasttext"] = "langdetect"
     min_cluster_size: Annotated[int, Field(ge=2)] = 3
     min_samples: NonNegativeInt = 1
     exemplar_count: PositiveInt = 3

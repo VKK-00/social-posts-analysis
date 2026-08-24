@@ -104,7 +104,7 @@ class AnalysisService:
         comments = self._load_table("comments").filter(pl.col("run_id") == resolved_run_id)
         origin_posts = filter_origin_posts_frame(posts)
 
-        detector = LanguageDetector(self.config.analysis.languages)
+        detector = LanguageDetector(self.config.analysis.languages, method=self.config.analysis.language_method)
         providers = build_providers(self.config.providers.embeddings, self.config.providers.llm)
         cache_store = AnalysisCacheStore(self.config, self.paths)
         # Local providers (sentence-transformers) expose their true dimension

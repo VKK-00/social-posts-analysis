@@ -1076,3 +1076,85 @@ def test_narrative_clusterer_uses_ctfidf_keywords() -> None:
     summaries, _memberships = clusterer.cluster_items("post", items, embeddings, "run-ctf")
     labels = {summary["label"] for summary in summaries}
     assert labels == {"дрони", "вибори"}
+
+
+# ---------------------------------------------------------------------------
+# 18. Pluggable language detection backend (analysis/language.py)
+# ---------------------------------------------------------------------------
+
+
+def test_langdetect_backend_remains_default_and_deterministic() -> None:
+    from social_posts_analysis.analysis.language import LanguageDetector
+
+    detector = LanguageDetector(["ru", "uk", "en"])
+    assert detector.method == "langdetect"
+    first = detector.detect("Це український текст про події в країні")
+    second = detector.detect("Це український текст про події в країні")
+    assert first.language == second.language
+    assert first.method == "langdetect"
+
+
+def test_fasttext_backend_used_when_module_available(monkeypatch) -> None:
+    import sys
+    import types
+
+    from social_posts_analysis.analysis.language import LanguageDetector
+
+    fake_module = types.ModuleType("fast_langdetect")
+    fake_module.detect = lambda text, low_memory=False: {"lang": "UK", "score": 0.93}
+    monkeypatch.setitem(sys.modules, "fast_langdetect", fake_module)
+
+    detector = LanguageDetector(["ru", "uk", "en"], method="fasttext")
+    prediction = detector.detect("Короткий текст")
+    assert prediction.method == "fasttext"
+    assert prediction.language == "uk"
+    assert abs(prediction.confidence - 0.93) < 1e-9
+
+
+def test_fasttext_out_of_scope_result_is_still_reported(monkeypatch) -> None:
+    """A confident 'de' beats the cyrillic heuristic that would guess ru."""
+    import sys
+    import types
+
+    from social_posts_analysis.analysis.language import LanguageDetector
+
+    fake_module = types.ModuleType("fast_langdetect")
+    fake_module.detect = lambda text, low_memory=False: {"lang": "de", "score": 0.88}
+    monkeypatch.setitem(sys.modules, "fast_langdetect", fake_module)
+
+    detector = LanguageDetector(["ru", "uk", "en"], method="fasttext")
+    prediction = detector.detect("irgendein kurzer text")
+    assert prediction.method == "fasttext"
+    assert prediction.language == "de"
+
+
+def test_fasttext_falls_back_to_heuristics_when_package_missing(monkeypatch) -> None:
+    import sys
+
+    from social_posts_analysis.analysis.language import LanguageDetector
+
+    monkeypatch.setitem(sys.modules, "fast_langdetect", None)  # import fails
+    detector = LanguageDetector(["ru", "uk", "en"], method="fasttext")
+    prediction = detector.detect("Дуже важлива новина з фронту")
+    # No fasttext available: the deterministic langdetect backend takes over
+    # (heuristics would only follow if langdetect also failed); run does not fail.
+    assert prediction.method != "fasttext"
+    assert prediction.language == "uk"
+
+
+def test_config_language_method_switch(project_config) -> None:
+    assert project_config.analysis.language_method == "langdetect"
+    payload_ok = {"language_method": "fasttext"}
+    config = ProjectConfig.model_validate(
+        {
+            **{
+                "source": {"platform": "telegram", "source_name": "example_channel"},
+                "sides": [{"side_id": "side_a", "name": "Actor A"}],
+                "collector": _base_project_payload()["collector"],
+            },
+            "analysis": payload_ok,
+        }
+    )
+    assert config.analysis.language_method == "fasttext"
+    with pytest.raises(ValidationError):
+        ProjectConfig.model_validate({**_base_project_payload(), "analysis": {"language_method": "magic"}})

@@ -572,6 +572,35 @@ providers:
 Embedding cache keys include the resolved model name, so switching models
 never reuses stale vectors.
 
+### Language detection backends
+
+`analysis.language_method` switches the detector: `langdetect` (default;
+deterministic; no model download) or `fasttext` (Facebook's lid.176 model via
+the optional [`fasttext-langdetect`](https://pypi.org/project/fasttext-langdetect/)
+package — faster and more accurate on short texts; downloads the model on
+first use). Both fall back to script/lexicon heuristics, so a missing model
+never fails a run. Every prediction records its backend in
+`detected_languages.method`.
+
+### SQL analysis over DuckDB
+
+All processed tables are projected into one DuckDB database, ready for ad-hoc
+research queries without touching Python:
+
+```bash
+duckdb data/processed/social_posts_analysis.duckdb
+```
+
+Ready-made queries (support with Wilson intervals, deepest discussion trees,
+copypasta audit via near-duplicates, stance per narrative cluster, language
+mix per post) live in [examples/analysis_queries.sql](examples/analysis_queries.sql):
+
+```sql
+SELECT side_id, round(support_ratio, 3) AS ratio,
+       round(support_ratio_low, 3) AS low, round(support_ratio_high, 3) AS high
+FROM support_metrics WHERE scope_type = 'global';
+```
+
 ## Testing
 
 Run:
@@ -581,7 +610,6 @@ uv run ruff check .
 uv run mypy src
 uv run pytest -q
 ```
-
 The current test suite covers:
 
 - Facebook Meta API pagination, nested comments, and visible shares
