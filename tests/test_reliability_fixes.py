@@ -1158,3 +1158,128 @@ def test_config_language_method_switch(project_config) -> None:
     assert config.analysis.language_method == "fasttext"
     with pytest.raises(ValidationError):
         ProjectConfig.model_validate({**_base_project_payload(), "analysis": {"language_method": "magic"}})
+
+
+# ---------------------------------------------------------------------------
+# 19. Failure isolation in public_web.collect()
+# ---------------------------------------------------------------------------
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def goto(self, url, wait_until=None, timeout=None):  # noqa: ANN001, ANN002, ARG002
+        return None
+
+    def wait_for_timeout(self, ms):  # noqa: ANN001, ARG002
+        return None
+
+    def title(self) -> str:
+        return "Example Page"
+
+    @property
+    def url(self) -> str:
+        return "https://www.facebook.com/example-page"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeContext:
+    def __init__(self) -> None:
+        self.pages: list[_FakePage] = []
+
+    def new_page(self) -> _FakePage:
+        page = _FakePage()
+        self.pages.append(page)
+        return page
+
+
+def test_public_web_collect_isolates_media_and_detail_failures(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from social_posts_analysis.collectors.public_web import PublicWebCollector
+    from social_posts_analysis.contracts import PostSnapshot
+    from social_posts_analysis.raw_store import RawSnapshotStore
+
+    payload = {
+        "source": {
+            "platform": "facebook",
+            "url": "https://www.facebook.com/example-page",
+            "source_name": "Example Page",
+        },
+        "sides": [{"side_id": "side_a", "name": "Actor A"}],
+        "collector": {
+            "mode": "web",
+            "meta_api": {"enabled": False},
+            "public_web": {"enabled": True},
+            "telegram_mtproto": {"enabled": False},
+        },
+    }
+    config = ProjectConfig.model_validate(payload)
+    collector = PublicWebCollector(config)
+
+    fake_context = _FakeContext()
+    runtime = SimpleNamespace(
+        context=fake_context,
+        warnings=[],
+        browser=None,
+        temp_profile_dir=None,
+        close=lambda: None,
+    )
+    monkeypatch.setattr(collector, "_open_collection_context", lambda playwright: runtime)
+
+    class _FakeSyncPlaywright:
+        def __enter__(self):
+            return SimpleNamespace()
+
+        def __exit__(self, *args):
+            return False
+
+    import playwright.sync_api as sync_api
+
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: _FakeSyncPlaywright())
+
+    def fake_discover(context, page_url, tab_name, raw_store):  # noqa: ANN001, ARG001
+        if tab_name == "videos":
+            raise RuntimeError("tab crashed")
+        return []
+
+    monkeypatch.setattr(collector, "_discover_media_candidates", fake_discover)
+    monkeypatch.setattr(collector, "_extract_plugin_feed_candidates", lambda page: [])
+    monkeypatch.setattr(
+        collector,
+        "_collect_direct_feed_candidates",
+        lambda **kwargs: (
+            {"title": "Example Page", "url": kwargs["page_url"]},
+            [
+                {"permalink": "https://www.facebook.com/posts/1", "text": "first"},
+                {"permalink": "https://www.facebook.com/posts/2", "text": "second"},
+            ],
+        ),
+    )
+
+    good_post = PostSnapshot(
+        post_id="post-2",
+        platform="facebook",
+        source_id="example-page",
+        message="second",
+        source_collector="public_web",
+    )
+
+    def fake_detail(context, page_id, page_name, candidate, published_at, raw_store):  # noqa: ANN001, ARG001
+        if candidate["permalink"].endswith("/1"):
+            raise RuntimeError("renderer crashed")
+        return good_post, False
+
+    monkeypatch.setattr(collector, "_collect_post_detail", fake_detail)
+
+    manifest = collector.collect("run-isolated", RawSnapshotStore(tmp_path / "raw"))
+
+    # The crashed detail page became a warning, not an aborted run.
+    assert any("Detail page extraction failed" in warning for warning in manifest.warnings)
+    assert any("Media tab 'videos' extraction failed" in warning for warning in manifest.warnings)
+    assert len(manifest.posts) == 1
+    assert manifest.posts[0].post_id == "post-2"
+    assert manifest.status == "partial"

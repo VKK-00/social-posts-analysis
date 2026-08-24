@@ -82,7 +82,12 @@ from .facebook_web_timestamps import (
     parse_timestamp_token,
 )
 from .range_utils import RangeFilter
-from .web_runtime import WebCollectorRuntime, ensure_playwright_available, open_web_runtime
+from .web_runtime import (
+    WebCollectorRuntime,
+    ensure_playwright_available,
+    open_web_runtime,
+    summarize_launch_exception,
+)
 
 
 class PublicWebCollector(BaseCollector):
@@ -159,24 +164,26 @@ class PublicWebCollector(BaseCollector):
                             "url": plugin_payload["url"],
                         }
 
-                video_candidates = self._discover_media_candidates(
-                    context=discovery_runtime.context,
-                    page_url=page_url,
-                    tab_name="videos",
-                    raw_store=raw_store,
-                )
-                photo_candidates = self._discover_media_candidates(
-                    context=discovery_runtime.context,
-                    page_url=page_url,
-                    tab_name="photos",
-                    raw_store=raw_store,
-                )
-                reel_candidates = self._discover_media_candidates(
-                    context=discovery_runtime.context,
-                    page_url=page_url,
-                    tab_name="reels",
-                    raw_store=raw_store,
-                )
+                # Each media tab is isolated: a single failing tab degrades to
+                # an empty candidate list plus a warning instead of killing
+                # the whole run.
+                for tab_name in ("videos", "photos", "reels"):
+                    try:
+                        candidates_from_tab = self._discover_media_candidates(
+                            context=discovery_runtime.context,
+                            page_url=page_url,
+                            tab_name=tab_name,
+                            raw_store=raw_store,
+                        )
+                    except Exception as exc:
+                        warnings.append(f"Media tab '{tab_name}' extraction failed: {summarize_launch_exception(exc)}")
+                        candidates_from_tab = []
+                    if tab_name == "videos":
+                        video_candidates = candidates_from_tab
+                    elif tab_name == "photos":
+                        photo_candidates = candidates_from_tab
+                    else:
+                        reel_candidates = candidates_from_tab
                 candidates = (
                     direct_feed_candidates + plugin_candidates + video_candidates + photo_candidates + reel_candidates
                 )
@@ -209,14 +216,22 @@ class PublicWebCollector(BaseCollector):
                     if self.config.date_range.start or self.config.date_range.end:
                         if published_at and not self._within_configured_range(published_at):
                             continue
-                    post, login_wall_detected = self._collect_post_detail(
-                        context=runtime.context,
-                        page_id=page_id,
-                        page_name=page_name,
-                        candidate=candidate,
-                        published_at=published_at,
-                        raw_store=raw_store,
-                    )
+                    # One broken detail page (navigation crash, renderer hang)
+                    # must not abort collection of the remaining posts.
+                    try:
+                        post, login_wall_detected = self._collect_post_detail(
+                            context=runtime.context,
+                            page_id=page_id,
+                            page_name=page_name,
+                            candidate=candidate,
+                            published_at=published_at,
+                            raw_store=raw_store,
+                        )
+                    except Exception as exc:
+                        warnings.append(
+                            f"Detail page extraction failed for {permalink}: {summarize_launch_exception(exc)}"
+                        )
+                        continue
                     if login_wall_detected and self._uses_authenticated_browser() and not auth_login_wall_warning_added:
                         warnings.append(
                             "Authenticated browser mode is enabled, but Facebook still returned a login wall for at least one detail page. The selected browser profile may not be logged in to Facebook."
