@@ -371,6 +371,16 @@ class ReportService:
         telegram_summary = (
             self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
         )
+        cascade_top = (
+            cascade_metrics.sort("node_count", descending=True).head(10).to_dicts()
+            if not cascade_metrics.is_empty()
+            else []
+        )
+        near_duplicates_top = (
+            near_duplicates.sort("similarity", descending=True).head(10).to_dicts()
+            if not near_duplicates.is_empty()
+            else []
+        )
         x_summary = self._x_summary(origin_posts, comments) if platform == "x" else None
         threads_summary = self._threads_summary(origin_posts, comments) if platform == "threads" else None
         instagram_summary = self._instagram_summary(origin_posts, comments) if platform == "instagram" else None
@@ -415,6 +425,8 @@ class ReportService:
             "threads_summary": threads_summary,
             "instagram_summary": instagram_summary,
             "propagation_summary": propagation_summary,
+            "cascade_top": cascade_top,
+            "near_duplicates_top": near_duplicates_top,
             "export_tables": export_tables,
         }
 

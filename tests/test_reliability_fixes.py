@@ -1287,6 +1287,58 @@ def test_page_scrape_requires_url(project_config, project_paths) -> None:
         service.run(url="")
 
 
+# ---------------------------------------------------------------------------
+# 21. Report sections for cascade and near-duplicate results
+# ---------------------------------------------------------------------------
+
+
+def test_report_contains_cascade_and_near_duplicate_sections(project_config, project_paths, monkeypatch) -> None:
+    from social_posts_analysis.analysis.service import AnalysisService
+    from social_posts_analysis.normalize import NormalizationService
+    from social_posts_analysis.reporting.service import ReportService
+
+    run_id = "20260402T120000Z"
+    NormalizationService(project_config, project_paths).run(run_id=run_id)
+
+    class CountingEmbeddings:
+        name = "counting_embedding"
+
+        def embed_texts(self, texts):
+            # Deterministic pseudo-random vectors keep HDBSCAN fast.
+            rng = np.random.default_rng(len(texts))
+            return rng.random((len(texts), 16))
+
+    llm_calls: list[dict[str, Any]] = []
+
+    class StubLLM:
+        name = "stub_llm"
+
+        def summarize_cluster(self, item_type, keywords, texts):
+            return {"label": keywords[0] if keywords else item_type, "description": ""}
+
+        def classify_stance(self, text, side):
+            llm_calls.append({})
+            return {"label": "neutral", "confidence": 0.4}
+
+    class _Bundle:
+        def __init__(self) -> None:
+            self.embeddings = CountingEmbeddings()
+            self.llm = StubLLM()
+            self.summary = {"embeddings": self.embeddings.name, "llm": self.llm.name}
+
+    bundle = _Bundle()
+    monkeypatch.setattr("social_posts_analysis.analysis.service.build_providers", lambda *_a, **_k: bundle)
+
+    AnalysisService(project_config, project_paths).run(run_id=run_id)
+    outputs = ReportService(project_config, project_paths).run(run_id=run_id)
+
+    markdown = Path(outputs[0]).read_text(encoding="utf-8")
+    assert "## Cascade Shapes" in markdown
+    assert "## Near-Duplicate Pairs" in markdown
+    assert "No cascade metrics were computed" in markdown or "comment_tree" in markdown
+    assert "No near-duplicate pairs met the configured threshold" in markdown or "`post`" in markdown
+
+
 def test_config_language_method_switch() -> None:
     payload_ok = {"language_method": "fasttext"}
     config = ProjectConfig.model_validate(

@@ -261,3 +261,25 @@ Source runs:
 {% for row in language_mix %}
 | `{{ row.item_type }}` | `{{ row.language }}` | {{ row.count }} |
 {% endfor %}
+
+## Cascade Shapes
+{% if cascade_top %}
+| Type | Scope | Nodes | Max Depth | Max Breadth | Structural Virality |
+| --- | --- | ---: | ---: | ---: | ---: |
+{% for row in cascade_top %}
+| `{{ row.cascade_type }}` | `{{ row.scope_id }}` | {{ row.node_count }} | {{ row.max_depth }} | {{ row.max_breadth }} | {% if row.structural_virality is none %}n/a{% else %}{{ "%.3f"|format(row.structural_virality) }}{% endif %} |
+{% endfor %}
+{% else %}
+- No cascade metrics were computed for this run.
+{% endif %}
+
+## Near-Duplicate Pairs
+{% if near_duplicates_top %}
+| Similarity | Type A | ID A | Type B | ID B |
+| --- | ---: | --- | --- | --- |
+{% for row in near_duplicates_top %}
+| {{ "%.2f"|format(row.similarity) }} | `{{ row.item_type_a }}` | `{{ row.item_id_a }}` | `{{ row.item_type_b }}` | `{{ row.item_id_b }}` |
+{% endfor %}
+{% else %}
+- No near-duplicate pairs met the configured threshold in this run.
+{% endif %}

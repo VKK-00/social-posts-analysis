@@ -50,6 +50,12 @@ dev = [
 semantic = [
   "sentence-transformers>=3.0,<6.0",
 ]
+# Optional fast language identification backend (lid.176 model, downloaded on
+# first use): uv sync --extra dev --extra lang
+# then set analysis.language_method: "fasttext" in the config.
+lang = [
+  "fasttext-langdetect>=1.0,<2.0",
+]
 
 [project.scripts]
 social-posts-analysis = "social_posts_analysis.cli:app"

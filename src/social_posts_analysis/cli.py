@@ -15,6 +15,27 @@ from .reporting.service import ReportService, ReviewExportService
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from importlib.metadata import version as package_version
+
+        typer.echo(f"social-posts-analysis {package_version('social-posts-analysis')}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the installed version and exit.",
+    ),
+) -> None:
+    """Local-first social media collection and narrative analysis pipeline."""
+
+
 def _load_project(config_path: Path) -> tuple[Path, ProjectPaths, ProjectConfig]:
     root = project_root_for_config(config_path)
     config = load_config(config_path)
