@@ -506,6 +506,19 @@ Important report exports include:
 
 `source_warnings.csv` now includes explicit `source_run_id`, `warning_index`, and `warning` columns, so merged snapshots still show which raw run produced each collector warning.
 
+## Research Access
+
+For content that public scraping legitimately cannot reach (replies behind
+authentications, historical archives, platform-wide searches), use the
+sanctioned research programs — X Academic API, Meta Content Library,
+Instagram Graph API. **[RESEARCH_ACCESS.md](RESEARCH_ACCESS.md)** maps each
+platform's official route to the exact config keys in this pipeline, plus a
+GDPR/DSA/IRB compliance checklist for publications.
+
+This project deliberately contains no CAPTCHA solving, fingerprint spoofing,
+or auth-wall circumvention; see RESEARCH_ACCESS.md for why and what to use
+instead.
+
 ## Private Local Files
 
 These files or directories should stay local and should not be committed:
