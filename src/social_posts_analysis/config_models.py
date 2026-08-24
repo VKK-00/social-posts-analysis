@@ -2,13 +2,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .config_env import env_int, env_value
 from .config_validation import validate_project_config, validate_source_reference
+
+# Shared numeric bounds. Previously these fields accepted any integer, so a
+# typo like `page_size: 0` or a negative timeout silently degraded collection.
+PageSize = Annotated[int, Field(ge=1)]
+PositiveInt = Annotated[int, Field(ge=1)]
+NonNegativeInt = Annotated[int, Field(ge=0)]
+NonNegativeFloat = Annotated[float, Field(ge=0.0)]
+TimeoutSeconds = Annotated[float, Field(gt=0)]
 
 
 class DateRangeConfig(BaseModel):
@@ -93,9 +101,9 @@ class FacebookMetaApiConfig(BaseModel):
     api_version: str = "v25.0"
     base_url: str = "https://graph.facebook.com"
     access_token: str | None = Field(default_factory=lambda: env_value("META_ACCESS_TOKEN"))
-    page_size: int = 25
-    timeout_seconds: float = 30.0
-    max_retries: int = 3
+    page_size: PageSize = 25
+    timeout_seconds: TimeoutSeconds = 30.0
+    max_retries: NonNegativeInt = 3
 
 
 class AuthenticatedBrowserConfig(BaseModel):
@@ -115,9 +123,9 @@ class FacebookPublicWebConfig(BaseModel):
     enabled: bool = False
     headless: bool = True
     browser_channel: str | None = None
-    max_scrolls: int = 8
-    wait_after_scroll_ms: int = 1500
-    timeout_seconds: float = 30.0
+    max_scrolls: NonNegativeInt = 8
+    wait_after_scroll_ms: NonNegativeInt = 1500
+    timeout_seconds: TimeoutSeconds = 30.0
     authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
 
 
@@ -127,9 +135,9 @@ class TelegramWebConfig(BaseModel):
     enabled: bool = False
     headless: bool = True
     browser_channel: str | None = None
-    max_scrolls: int = 6
-    wait_after_scroll_ms: int = 1200
-    timeout_seconds: float = 30.0
+    max_scrolls: NonNegativeInt = 6
+    wait_after_scroll_ms: NonNegativeInt = 1200
+    timeout_seconds: TimeoutSeconds = 30.0
 
 
 class TelegramMtprotoConfig(BaseModel):
@@ -139,9 +147,9 @@ class TelegramMtprotoConfig(BaseModel):
     session_file: str | None = Field(default_factory=lambda: env_value("TELEGRAM_SESSION_FILE"))
     api_id: int | None = Field(default_factory=lambda: env_int("TELEGRAM_API_ID"))
     api_hash: str | None = Field(default_factory=lambda: env_value("TELEGRAM_API_HASH"))
-    page_size: int = 100
-    timeout_seconds: float = 30.0
-    max_retries: int = 3
+    page_size: PageSize = 100
+    timeout_seconds: TimeoutSeconds = 30.0
+    max_retries: NonNegativeInt = 3
 
 
 class TelegramBotApiConfig(BaseModel):
@@ -150,11 +158,11 @@ class TelegramBotApiConfig(BaseModel):
     enabled: bool = False
     base_url: str = "https://api.telegram.org"
     bot_token: str | None = Field(default_factory=lambda: env_value("TELEGRAM_BOT_TOKEN"))
-    update_limit: int = 100
-    timeout_seconds: float = 30.0
-    max_retries: int = 3
+    update_limit: PositiveInt = 100
+    timeout_seconds: TimeoutSeconds = 30.0
+    max_retries: NonNegativeInt = 3
     consume_updates: bool = False
-    offset: int | None = None
+    offset: NonNegativeInt | None = None
 
 
 class XApiConfig(BaseModel):
@@ -163,9 +171,9 @@ class XApiConfig(BaseModel):
     enabled: bool = True
     base_url: str = "https://api.x.com/2"
     bearer_token: str | None = Field(default_factory=lambda: env_value("X_BEARER_TOKEN"))
-    page_size: int = 100
-    timeout_seconds: float = 30.0
-    max_retries: int = 3
+    page_size: PageSize = 100
+    timeout_seconds: TimeoutSeconds = 30.0
+    max_retries: NonNegativeInt = 3
     search_scope: Literal["recent", "all"] = "recent"
 
 
@@ -175,9 +183,9 @@ class XWebConfig(BaseModel):
     enabled: bool = False
     headless: bool = True
     browser_channel: str | None = None
-    max_scrolls: int = 8
-    wait_after_scroll_ms: int = 1500
-    timeout_seconds: float = 30.0
+    max_scrolls: NonNegativeInt = 8
+    wait_after_scroll_ms: NonNegativeInt = 1500
+    timeout_seconds: TimeoutSeconds = 30.0
     authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
 
 
@@ -187,9 +195,9 @@ class ThreadsApiConfig(BaseModel):
     enabled: bool = True
     base_url: str = "https://graph.threads.net/v1.0"
     access_token: str | None = Field(default_factory=lambda: env_value("THREADS_ACCESS_TOKEN"))
-    page_size: int = 100
-    timeout_seconds: float = 30.0
-    max_retries: int = 3
+    page_size: PageSize = 100
+    timeout_seconds: TimeoutSeconds = 30.0
+    max_retries: NonNegativeInt = 3
 
 
 class ThreadsWebConfig(BaseModel):
@@ -198,9 +206,9 @@ class ThreadsWebConfig(BaseModel):
     enabled: bool = False
     headless: bool = True
     browser_channel: str | None = None
-    max_scrolls: int = 8
-    wait_after_scroll_ms: int = 1500
-    timeout_seconds: float = 30.0
+    max_scrolls: NonNegativeInt = 8
+    wait_after_scroll_ms: NonNegativeInt = 1500
+    timeout_seconds: TimeoutSeconds = 30.0
     authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
 
 
@@ -211,9 +219,9 @@ class InstagramGraphApiConfig(BaseModel):
     api_version: str = "v25.0"
     base_url: str = "https://graph.facebook.com"
     access_token: str | None = Field(default_factory=lambda: env_value("INSTAGRAM_ACCESS_TOKEN"))
-    page_size: int = 100
-    timeout_seconds: float = 30.0
-    max_retries: int = 3
+    page_size: PageSize = 100
+    timeout_seconds: TimeoutSeconds = 30.0
+    max_retries: NonNegativeInt = 3
 
 
 class InstagramWebConfig(BaseModel):
@@ -222,9 +230,9 @@ class InstagramWebConfig(BaseModel):
     enabled: bool = False
     headless: bool = True
     browser_channel: str | None = None
-    max_scrolls: int = 8
-    wait_after_scroll_ms: int = 1500
-    timeout_seconds: float = 30.0
+    max_scrolls: NonNegativeInt = 8
+    wait_after_scroll_ms: NonNegativeInt = 1500
+    timeout_seconds: TimeoutSeconds = 30.0
     authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
 
 
@@ -241,8 +249,8 @@ class CollectorConfig(BaseModel):
         "threads_api",
         "instagram_graph_api",
     ] = "hybrid"
-    multi_pass_runs: int = 1
-    wait_between_passes_seconds: float = 0.0
+    multi_pass_runs: PositiveInt = 1
+    wait_between_passes_seconds: NonNegativeFloat = 0.0
     meta_api: FacebookMetaApiConfig = Field(default_factory=FacebookMetaApiConfig)
     public_web: FacebookPublicWebConfig = Field(default_factory=FacebookPublicWebConfig)
     telegram_web: TelegramWebConfig = Field(default_factory=TelegramWebConfig)
@@ -263,8 +271,8 @@ class EmbeddingProviderConfig(BaseModel):
     base_url: str | None = Field(default_factory=lambda: env_value("EMBEDDING_BASE_URL"))
     api_key: str | None = Field(default_factory=lambda: env_value("EMBEDDING_API_KEY"))
     model: str = "text-embedding-3-small"
-    dimension: int = 256
-    timeout_seconds: float = 45.0
+    dimension: PositiveInt = 256
+    timeout_seconds: TimeoutSeconds = 45.0
     # Local model directory or HuggingFace name for sentence_transformers kind.
     local_model: str | None = None
 
@@ -277,7 +285,7 @@ class LLMProviderConfig(BaseModel):
     api_key: str | None = Field(default_factory=lambda: env_value("LLM_API_KEY"))
     model: str = "gpt-4o-mini"
     temperature: float = 0.0
-    timeout_seconds: float = 60.0
+    timeout_seconds: TimeoutSeconds = 60.0
 
 
 class ProvidersConfig(BaseModel):
@@ -291,10 +299,10 @@ class AnalysisConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     languages: list[str] = Field(default_factory=lambda: ["ru", "uk", "en"])
-    min_cluster_size: int = 3
-    min_samples: int = 1
-    exemplar_count: int = 3
-    batch_size: int = 25
+    min_cluster_size: Annotated[int, Field(ge=2)] = 3
+    min_samples: NonNegativeInt = 1
+    exemplar_count: PositiveInt = 3
+    batch_size: PositiveInt = 25
     max_items_per_item_type: int | None = None
     # Minimum estimated Jaccard similarity (MinHash-based) for two texts to be
     # reported as near-duplicates in analysis.near_duplicates.
@@ -304,7 +312,7 @@ class AnalysisConfig(BaseModel):
 class NormalizationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    merge_recent_runs: int = 1
+    merge_recent_runs: PositiveInt = 1
     source_run_ids: list[str] = Field(default_factory=list)
     # When enabled, third-party authors (commenters, propagation authors) are
     # stored under stable non-reversible pseudonyms; names and profile URLs

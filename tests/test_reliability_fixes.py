@@ -889,3 +889,80 @@ def test_empty_or_single_item_yields_empty_frame() -> None:
 
 def test_config_exposes_near_duplicate_threshold(project_config) -> None:
     assert project_config.analysis.near_duplicate_threshold == 0.8
+
+
+# ---------------------------------------------------------------------------
+# 16. Numeric config bounds + shared table IO
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"page_size": 0},
+        {"page_size": -5},
+        {"timeout_seconds": 0.0},
+        {"max_retries": -1},
+    ],
+)
+def test_invalid_collector_numbers_are_rejected(override: dict[str, int]) -> None:
+    payload = _base_project_payload()
+    payload["collector"]["telegram_mtproto"].update(override)  # type: ignore[union-attr]
+    with pytest.raises(ValidationError):
+        ProjectConfig.model_validate(payload)
+
+
+def test_valid_collector_numbers_are_accepted() -> None:
+    payload = _base_project_payload()
+    payload["collector"]["telegram_mtproto"].update({"page_size": 1, "max_retries": 0, "timeout_seconds": 0.5})
+    config = ProjectConfig.model_validate(payload)
+    assert config.collector.telegram_mtproto.page_size == 1
+
+
+@pytest.mark.parametrize(
+    ("field"),
+    ["min_cluster_size", "batch_size", "exemplar_count"],
+)
+def test_analysis_numeric_fields_reject_zero(field: str) -> None:
+    payload = _base_project_payload()
+    payload["analysis"] = {field: 0}
+    with pytest.raises(ValidationError):
+        ProjectConfig.model_validate(payload)
+
+
+def test_env_int_warns_on_invalid_value(monkeypatch) -> None:
+    from social_posts_analysis.config_env import env_int
+
+    monkeypatch.setenv("SPA_TEST_INT_VAR", "not-a-number")
+    with pytest.warns(UserWarning, match="SPA_TEST_INT_VAR"):
+        assert env_int("SPA_TEST_INT_VAR") is None
+
+    monkeypatch.setenv("SPA_TEST_INT_VAR", "42")
+    import warnings as warnings_module
+
+    with warnings_module.catch_warnings():
+        warnings_module.simplefilter("error")
+        assert env_int("SPA_TEST_INT_VAR") == 42
+
+
+def test_append_unique_deduplicates_with_last_wins(tmp_path: Path) -> None:
+    from social_posts_analysis.table_io import append_unique, frame_from_records, load_typed
+
+    schema = {"item_id": pl.String, "value": pl.Int64}
+    path = tmp_path / "table.parquet"
+
+    append_unique(
+        path, frame_from_records([{"item_id": "a", "value": 1}], schema), schema=schema, key_columns=["item_id"]
+    )
+    append_unique(
+        path,
+        frame_from_records([{"item_id": "a", "value": 2}, {"item_id": "b", "value": 3}], schema),
+        schema=schema,
+        key_columns=["item_id"],
+    )
+
+    result = load_typed(path, schema).sort("item_id")
+    assert result.height == 2
+    # The newer row wins the key collision.
+    assert result.row(0, named=True)["value"] == 2
+    assert result.row(1, named=True)["item_id"] == "b"

@@ -11,6 +11,7 @@ import polars as pl
 
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.table_io import append_unique, frame_from_records
 from social_posts_analysis.utils import utc_now_iso
 
 EMBEDDING_CACHE_SCHEMA = {
@@ -250,11 +251,5 @@ class AnalysisCacheStore:
     ) -> None:
         if not rows:
             return
-        new_frame = pl.DataFrame(rows, schema=schema)
-        if path.exists():
-            existing_frame = pl.read_parquet(path)
-            combined = pl.concat([existing_frame, new_frame], how="diagonal_relaxed")
-        else:
-            combined = new_frame
-        combined = combined.unique(subset=key_columns, keep="last")
-        combined.write_parquet(path)
+        new_frame = frame_from_records(rows, schema)
+        append_unique(path, new_frame, schema=schema, key_columns=key_columns)

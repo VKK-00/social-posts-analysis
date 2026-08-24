@@ -130,14 +130,15 @@ class ReviewExportService:
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        if path.exists():
-            return pl.read_parquet(path)
         from social_posts_analysis.normalization.schemas import TABLE_SCHEMAS
+        from social_posts_analysis.table_io import load_typed
 
         schema = TABLE_SCHEMAS.get(table_name)
         # A typed empty frame keeps review exports resilient when analysis has
         # not run yet, instead of raising ColumnNotFoundError.
-        return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
+        if schema is not None:
+            return load_typed(path, schema)
+        return pl.read_parquet(path) if path.exists() else pl.DataFrame()
 
 
 class ReportService:
@@ -831,14 +832,15 @@ class ReportService:
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        if path.exists():
-            return pl.read_parquet(path)
         from social_posts_analysis.normalization.schemas import TABLE_SCHEMAS
+        from social_posts_analysis.table_io import load_typed
 
         schema = TABLE_SCHEMAS.get(table_name)
         # A typed empty frame keeps report context building resilient when
         # normalization has not run yet, instead of raising ColumnNotFoundError.
-        return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
+        if schema is not None:
+            return load_typed(path, schema)
+        return pl.read_parquet(path) if path.exists() else pl.DataFrame()
 
     def _write_tabular_exports(self, run_id: str, export_tables: dict[str, pl.DataFrame]) -> list[Path]:
         return write_tabular_exports(self.paths, run_id, export_tables)

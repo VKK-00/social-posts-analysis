@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -9,6 +9,7 @@ import polars as pl
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.paths import ProjectPaths
 from social_posts_analysis.propagation import filter_origin_posts_frame
+from social_posts_analysis.table_io import append_unique, frame_from_records, load_typed
 
 from .cache import AnalysisCacheStore
 from .cascades import CASCADE_METRICS_SCHEMA, compute_cascade_metrics
@@ -20,7 +21,7 @@ from .providers import build_providers
 
 
 class AnalysisService:
-    ANALYSIS_KEYS = {
+    ANALYSIS_KEYS: dict[str, list[str]] = {
         "analysis_runs": ["run_id"],
         "detected_languages": ["run_id", "item_type", "item_id"],
         "cluster_memberships": ["run_id", "item_type", "item_id"],
@@ -30,7 +31,7 @@ class AnalysisService:
         "cascade_metrics": ["run_id", "cascade_type", "scope_id"],
         "near_duplicates": ["run_id", "item_type_a", "item_id_a", "item_type_b", "item_id_b"],
     }
-    ANALYSIS_SCHEMAS = {
+    ANALYSIS_SCHEMAS: dict[str, dict[str, Any]] = {
         "analysis_runs": {
             "run_id": pl.String,
             "embedding_provider": pl.String,
@@ -297,24 +298,9 @@ class AnalysisService:
 
     def _persist_table(self, table_name: str, records: list[dict[str, Any]]) -> Path:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        schema = cast(dict[str, Any], self.ANALYSIS_SCHEMAS[table_name])
-        new_df = pl.DataFrame(records, schema=schema) if records else pl.DataFrame(schema=schema)
-        if path.exists():
-            existing_df = pl.read_parquet(path)
-            if new_df.is_empty():
-                combined = existing_df
-            elif existing_df.is_empty():
-                combined = new_df
-            else:
-                combined = pl.concat([existing_df, new_df], how="diagonal_relaxed")
-        else:
-            combined = new_df
-
-        key_columns = [column for column in self.ANALYSIS_KEYS[table_name] if column in combined.columns]
-        if key_columns and not combined.is_empty():
-            combined = combined.unique(subset=key_columns, keep="last")
-        combined.write_parquet(path)
-        return path
+        schema = self.ANALYSIS_SCHEMAS[table_name]
+        new_df = frame_from_records(records, schema)
+        return append_unique(path, new_df, schema=schema, key_columns=self.ANALYSIS_KEYS[table_name])
 
     def _label_items_with_cache(
         self,
@@ -336,14 +322,14 @@ class AnalysisService:
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
-        if path.exists():
-            return pl.read_parquet(path)
         from social_posts_analysis.normalization.schemas import TABLE_SCHEMAS
 
         schema = TABLE_SCHEMAS.get(table_name)
         # A typed empty frame keeps downstream .filter/.col calls working when
         # normalization has not run yet, instead of raising ColumnNotFoundError.
-        return pl.DataFrame(schema=schema) if schema else pl.DataFrame()
+        if schema is not None:
+            return load_typed(path, schema)
+        return pl.read_parquet(path) if path.exists() else pl.DataFrame()
 
     def _sync_duckdb(self, table_paths: dict[str, Path]) -> None:
         connection = duckdb.connect(str(self.paths.database_path))
