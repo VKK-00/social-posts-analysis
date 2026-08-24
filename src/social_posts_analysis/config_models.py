@@ -296,6 +296,9 @@ class AnalysisConfig(BaseModel):
     exemplar_count: int = 3
     batch_size: int = 25
     max_items_per_item_type: int | None = None
+    # Minimum estimated Jaccard similarity (MinHash-based) for two texts to be
+    # reported as near-duplicates in analysis.near_duplicates.
+    near_duplicate_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
 
 
 class NormalizationConfig(BaseModel):

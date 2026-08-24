@@ -191,6 +191,7 @@ class ReportService:
         analysis_runs = self._load_table("analysis_runs").filter(pl.col("run_id") == run_id)
         collection_runs = self._load_table("collection_runs").filter(pl.col("run_id") == run_id)
         cascade_metrics = self._load_table("cascade_metrics").filter(pl.col("run_id") == run_id)
+        near_duplicates = self._load_table("near_duplicates").filter(pl.col("run_id") == run_id)
 
         clusters, memberships = self._apply_narrative_overrides(clusters, memberships)
         stance_labels = self._apply_stance_overrides(stance_labels)
@@ -362,6 +363,7 @@ class ReportService:
             "cascade_metrics": cascade_metrics.sort("node_count", descending=True)
             if not cascade_metrics.is_empty()
             else self._load_table("cascade_metrics").head(0),
+            "near_duplicates": near_duplicates.sort("similarity", descending=True),
             "source_run_trace": self._rows_to_frame(source_run_trace),
             "source_warnings": self._rows_to_frame(source_warnings),
         }

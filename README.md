@@ -479,6 +479,7 @@ Analysis tables:
 - `stance_labels.parquet`
 - `support_metrics.parquet`
 - `cascade_metrics.parquet`
+- `near_duplicates.parquet`
 - `analysis_runs.parquet`
 
 Review files:
@@ -533,6 +534,16 @@ propagation star (per origin): `node_count`, `max_depth`, `max_breadth`, and
 cascade including the root (Goel et al., 2015). Virality is `None` for
 cascades smaller than two nodes or above the 2000-node computation cap. The
 table is also exported as `report_<run_id>_tables/cascade_metrics.csv`.
+
+### Near-duplicate detection
+
+`near_duplicates` reports pairs of posts, propagations, or comments whose
+texts are near-identical (copypasta, cross-posted narratives, template spam).
+Detection uses deterministic MinHash signatures (128 permutations over word
+trigrams) with LSH banding — no external services or extra dependencies.
+Tune sensitivity with `analysis.near_duplicate_threshold` (default `0.8`,
+estimated Jaccard similarity). Pairs are exported as
+`report_<run_id>_tables/near_duplicates.csv`.
 
 ### Author pseudonymization
 

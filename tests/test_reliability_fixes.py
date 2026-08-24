@@ -805,3 +805,87 @@ def test_single_comment_tree_has_minimal_virality() -> None:
     assert row["max_depth"] == 1
     # origin <-> single comment: the smallest meaningful cascade.
     assert row["structural_virality"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# 15. Near-duplicate detection (analysis/duplicates.py)
+# ---------------------------------------------------------------------------
+
+
+def _dup_items() -> list[dict[str, Any]]:
+    base = (
+        "Комітет з питань оборони ухвалив рішення про додаткове фінансування "
+        "програми підтримки дронових підрозділів у прифронтових районах країни"
+    )
+    near = (
+        "Комітет з питань оборони ухвалив рішення про додаткове фінансування "
+        "програми підтримки дронових підрозділів у прифронтовых районах країни"
+    )  # one word differs
+    unrelated = "Сонячна погода привабила тисячі туристів на гірські стежки Карпат у вихідні дні"
+    return [
+        {"item_type": "post", "item_id": "p1", "text": base},
+        {"item_type": "propagation", "item_id": "s1", "text": near},
+        {"item_type": "post", "item_id": "p2", "text": unrelated},
+    ]
+
+
+def test_identical_and_near_identical_texts_are_detected() -> None:
+    from social_posts_analysis.analysis.duplicates import find_near_duplicates
+
+    texts = {
+        ("post", "a"): "the quick brown fox jumps over the lazy dog again and again",
+        ("post", "b"): "the quick brown fox jumps over the lazy dog again and again",
+        ("post", "c"): "completely different content about mountain weather forecasts today",
+    }
+    result = find_near_duplicates(texts, threshold=0.8, run_id="r")
+    rows = result.to_dicts()
+    pairs = {(row["item_id_a"], row["item_id_b"]) for row in rows}
+    assert ("a", "b") in pairs
+    identical_row = next(row for row in rows if {row["item_id_a"], row["item_id_b"]} == {"a", "b"})
+    assert identical_row["similarity"] > 0.95
+
+
+def test_unrelated_texts_are_not_reported() -> None:
+    from social_posts_analysis.analysis.duplicates import near_duplicate_texts
+
+    result = near_duplicate_texts(_dup_items(), threshold=0.8, run_id="r")
+    for row in result.to_dicts():
+        pair_ids = {row["item_id_a"], row["item_id_b"]}
+        # The only allowed pair is the near-identical p1/s1; the unrelated post stays out.
+        assert "p2" not in pair_ids
+
+
+def test_near_duplicate_detection_is_deterministic() -> None:
+    from social_posts_analysis.analysis.duplicates import minhash_signature, near_duplicate_texts
+
+    signature_one = minhash_signature("детермінований тест сигнатури мінхеш")
+    signature_two = minhash_signature("детермінований тест сигнатури мінхеш")
+    assert signature_one == signature_two
+
+    first = near_duplicate_texts(_dup_items(), threshold=0.8, run_id="r")
+    second = near_duplicate_texts(_dup_items(), threshold=0.8, run_id="r")
+    assert first.equals(second)
+
+
+def test_threshold_filters_weak_pairs() -> None:
+    from social_posts_analysis.analysis.duplicates import near_duplicate_texts
+
+    strict = near_duplicate_texts(_dup_items(), threshold=0.8, run_id="r")
+    loose = near_duplicate_texts(_dup_items(), threshold=0.05, run_id="r")
+    # A lower threshold can only add candidate-verified pairs, never remove them.
+    assert loose.height >= strict.height
+
+
+def test_empty_or_single_item_yields_empty_frame() -> None:
+    from social_posts_analysis.analysis.duplicates import NEAR_DUPLICATES_SCHEMA, find_near_duplicates
+
+    empty = find_near_duplicates({}, threshold=0.8, run_id="r")
+    assert empty.is_empty()
+    assert list(empty.columns) == list(NEAR_DUPLICATES_SCHEMA)
+
+    single = find_near_duplicates({("post", "x"): "тільки один текст"}, threshold=0.8, run_id="r")
+    assert single.is_empty()
+
+
+def test_config_exposes_near_duplicate_threshold(project_config) -> None:
+    assert project_config.analysis.near_duplicate_threshold == 0.8

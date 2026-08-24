@@ -13,6 +13,7 @@ from social_posts_analysis.propagation import filter_origin_posts_frame
 from .cache import AnalysisCacheStore
 from .cascades import CASCADE_METRICS_SCHEMA, compute_cascade_metrics
 from .clustering import NarrativeClusterer
+from .duplicates import NEAR_DUPLICATES_SCHEMA, near_duplicate_texts
 from .language import LanguageDetector
 from .metrics import compute_support_metrics
 from .providers import build_providers
@@ -27,6 +28,7 @@ class AnalysisService:
         "stance_labels": ["run_id", "item_type", "item_id", "side_id"],
         "support_metrics": ["run_id", "scope_type", "scope_id", "side_id"],
         "cascade_metrics": ["run_id", "cascade_type", "scope_id"],
+        "near_duplicates": ["run_id", "item_type_a", "item_id_a", "item_type_b", "item_id_b"],
     }
     ANALYSIS_SCHEMAS = {
         "analysis_runs": {
@@ -84,6 +86,7 @@ class AnalysisService:
             "run_id": pl.String,
         },
         "cascade_metrics": CASCADE_METRICS_SCHEMA,
+        "near_duplicates": NEAR_DUPLICATES_SCHEMA,
     }
 
     def __init__(self, config: ProjectConfig, paths: ProjectPaths) -> None:
@@ -203,6 +206,12 @@ class AnalysisService:
         propagation_edges = self._load_table("propagation_edges").filter(pl.col("run_id") == resolved_run_id)
         cascade_metrics = compute_cascade_metrics(comment_edges, propagation_edges, resolved_run_id)
 
+        near_duplicates = near_duplicate_texts(
+            [*post_items, *propagation_items, *comment_items],
+            threshold=self.config.analysis.near_duplicate_threshold,
+            run_id=resolved_run_id,
+        )
+
         analysis_run = [
             {
                 "run_id": resolved_run_id,
@@ -233,6 +242,10 @@ class AnalysisService:
             "cascade_metrics": self._persist_table(
                 "cascade_metrics",
                 cascade_metrics.to_dicts() if not cascade_metrics.is_empty() else [],
+            ),
+            "near_duplicates": self._persist_table(
+                "near_duplicates",
+                near_duplicates.to_dicts() if not near_duplicates.is_empty() else [],
             ),
         }
         self._sync_duckdb(outputs)
