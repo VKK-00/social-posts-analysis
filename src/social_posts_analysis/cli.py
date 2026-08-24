@@ -130,5 +130,28 @@ def run_many(
     )
 
 
+@app.command("scrape-page")
+def scrape_page(
+    url: str = typer.Option(..., "--url", help="Any social-media page URL to capture in the browser."),
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    scrolls: int = typer.Option(6, "--scrolls", min=0, help="Human-paced scroll passes."),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+) -> None:
+    """Scrape a single social-media page through the configured browser session.
+
+    Uses the logged-in profile when authenticated browser mode is enabled.
+    Login walls and CAPTCHAs are reported as warnings - they are never bypassed.
+    """
+    from .page_scrape import PageScrapeService
+
+    _, paths, config = _load_project(config_path)
+    service = PageScrapeService(config=config, paths=paths)
+    manifest = service.run(url=url, run_id=run_id, max_scrolls=scrolls)
+    typer.echo(
+        f"Scraped {manifest.run_id}: {len(manifest.posts)} posts extracted, "
+        f"{len(manifest.warnings)} warning(s), status={manifest.status}."
+    )
+
+
 if __name__ == "__main__":
     app()

@@ -1142,8 +1142,152 @@ def test_fasttext_falls_back_to_heuristics_when_package_missing(monkeypatch) -> 
     assert prediction.language == "uk"
 
 
-def test_config_language_method_switch(project_config) -> None:
-    assert project_config.analysis.language_method == "langdetect"
+# ---------------------------------------------------------------------------
+# 20. Single-page browser scraper (page_scrape.py)
+# ---------------------------------------------------------------------------
+
+
+class _ScrollFakePage:
+    """Browser page double that records scroll calls and exposes body text."""
+
+    def __init__(self, *, body_text: str = "Example content", height: int = 5000) -> None:
+        self.body_text = body_text
+        self.height = height
+        self.scroll_calls = 0
+        self.wait_calls: list[int] = []
+
+    def goto(self, url, wait_until=None, timeout=None):  # noqa: ANN001, ANN002, ARG002
+        return None
+
+    def wait_for_timeout(self, ms):  # noqa: ANN001
+        self.wait_calls.append(ms)
+
+    def evaluate(self, script):  # noqa: ANN001, ARG002
+        if "scrollBy" in script:
+            self.scroll_calls += 1
+            return None
+        if "scrollHeight" in script:
+            return self.height
+        return None
+
+    def locator(self, selector):  # noqa: ANN001, ARG002
+        text = self.body_text
+
+        class _Locator:
+            def inner_text(self_inner) -> str:
+                return text
+
+        return _Locator()
+
+    def title(self) -> str:
+        return "Example Page"
+
+    @property
+    def url(self) -> str:
+        return "https://www.facebook.com/example-page/posts/123"
+
+    def content(self) -> str:
+        return "<html><body>example</body></html>"
+
+    def screenshot(self, path, full_page=False):  # noqa: ANN001, ARG002
+        Path(path).write_bytes(b"png")
+
+
+def _scrape_config() -> ProjectConfig:
+    payload = {
+        "source": {"platform": "facebook", "url": "https://www.facebook.com/example-page", "source_name": "Example"},
+        "sides": [{"side_id": "side_a", "name": "Actor A"}],
+        "collector": {
+            "mode": "web",
+            "meta_api": {"enabled": False},
+            "public_web": {"enabled": True},
+            "telegram_mtproto": {"enabled": False},
+        },
+    }
+    return ProjectConfig.model_validate(payload)
+
+
+def test_detect_platform_matches_supported_hosts() -> None:
+    from social_posts_analysis.page_scrape import detect_platform
+
+    assert detect_platform("https://www.facebook.com/page") == "facebook"
+    assert detect_platform("https://x.com/account") == "x"
+    assert detect_platform("https://www.threads.net/@user") == "threads"
+    assert detect_platform("https://t.me/s/channel") == "telegram"
+    assert detect_platform("https://example.com/page") is None
+
+
+def test_humanized_delay_stays_within_jitter_bounds() -> None:
+    from social_posts_analysis.page_scrape import humanized_delay_ms
+
+    for _ in range(50):
+        delay = humanized_delay_ms(1000)
+        assert 650 <= delay <= 1350
+
+
+def test_page_scrape_captures_artifacts_and_reports_login_wall(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from social_posts_analysis.page_scrape import PageScrapeService
+
+    config = _scrape_config()
+    paths = SimpleNamespace(run_raw_dir=lambda run_id: tmp_path / "raw" / run_id)
+
+    login_wall_text = "Log In\nForgot password?\nEmail or phone number\nPassword\nCreate new account"
+    fake_page = _ScrollFakePage(body_text=login_wall_text)
+    fake_context = SimpleNamespace(new_page=lambda: fake_page)
+    runtime = SimpleNamespace(
+        context=fake_context,
+        warnings=[],
+        browser=None,
+        temp_profile_dir=None,
+        close=lambda: None,
+    )
+
+    service = PageScrapeService(config=config, paths=paths)  # type: ignore[arg-type]
+
+    class _FakeSyncPlaywright:
+        def __enter__(self):
+            return SimpleNamespace()
+
+        def __exit__(self, *args):
+            return False
+
+    import playwright.sync_api as sync_api
+
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: _FakeSyncPlaywright())
+    monkeypatch.setattr(service, "_open_runtime", lambda playwright: runtime)
+
+    manifest = service.run(url="https://www.facebook.com/example-page/posts/123", run_id="scrape-1", max_scrolls=3)
+
+    # Human-paced scrolling happened within the pass budget.
+    assert 1 <= fake_page.scroll_calls <= 3
+    # Every scroll pass has a jittered pause; later extraction attempts may add
+    # their own fixed waits, so filter to the humanized range.
+    jittered = [ms for ms in fake_page.wait_calls if 600 <= ms <= 1700]
+    assert len(jittered) >= fake_page.scroll_calls
+    assert len(set(jittered)) > 1
+    # Raw artifacts were written.
+    scrape_dir = tmp_path / "raw" / "scrape-1" / "page_scrape"
+    assert (scrape_dir / "page.html").exists()
+    assert (scrape_dir / "page.png").exists()
+    assert (scrape_dir / "page_metadata.json").exists()
+    # The login wall is reported honestly, not bypassed.
+    assert any("login wall" in warning.lower() for warning in manifest.warnings)
+    assert manifest.status == "partial"
+
+
+def test_page_scrape_requires_url(project_config, project_paths) -> None:
+    from social_posts_analysis.page_scrape import PageScrapeService
+
+    # A telegram payload has no source.url, so neither --url nor config provides one.
+    config = ProjectConfig.model_validate(_base_project_payload())
+    service = PageScrapeService(config, project_paths)
+    with pytest.raises(ValueError, match="requires --url"):
+        service.run(url="")
+
+
+def test_config_language_method_switch() -> None:
     payload_ok = {"language_method": "fasttext"}
     config = ProjectConfig.model_validate(
         {

@@ -455,6 +455,7 @@ The package exposes the `social-posts-analysis` CLI with:
 - `export-tables`
 - `run-all`
 - `run-many`
+- `scrape-page`
 
 ## Output Tables
 
@@ -600,6 +601,45 @@ SELECT side_id, round(support_ratio, 3) AS ratio,
        round(support_ratio_low, 3) AS low, round(support_ratio_high, 3) AS high
 FROM support_metrics WHERE scope_type = 'global';
 ```
+
+### SQL analysis over DuckDB
+
+All processed tables are projected into one DuckDB database, ready for ad-hoc
+research queries without touching Python:
+
+```bash
+duckdb data/processed/social_posts_analysis.duckdb
+```
+
+Ready-made queries (support with Wilson intervals, deepest discussion trees,
+copypasta audit via near-duplicates, stance per narrative cluster, language
+mix per post) live in [examples/analysis_queries.sql](examples/analysis_queries.sql):
+
+```sql
+SELECT side_id, round(support_ratio, 3) AS ratio,
+       round(support_ratio_low, 3) AS low, round(support_ratio_high, 3) AS high
+FROM support_metrics WHERE scope_type = 'global';
+```
+
+### Single-page browser scraping
+
+Any social-media page can be captured through the configured browser session:
+
+```bash
+social-posts-analysis scrape-page --url "https://www.facebook.com/<page>/posts/123" \
+  --config config/project.local.yaml --scrolls 6
+```
+
+- Uses the logged-in browser profile when authenticated browser mode is
+  enabled in the config; otherwise a public session.
+- Scrolls with randomized, human-paced pauses and saves raw artifacts:
+  `page.html`, `page_text.json`, `page.png` (screenshot), `page_metadata.json`.
+- Facebook URLs additionally get structured post extraction via the existing
+  public-web machinery; other platforms capture raw content (their structured
+  flows run through the dedicated collectors).
+- Login walls and CAPTCHAs are **detected and reported as warnings — they are
+  never bypassed.** The tool drives a real browser like a person; it does not
+  solve challenges or defeat anti-bot systems.
 
 ## Testing
 
