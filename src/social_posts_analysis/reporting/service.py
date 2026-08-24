@@ -190,6 +190,7 @@ class ReportService:
         stance_labels = self._load_table("stance_labels").filter(pl.col("run_id") == run_id)
         analysis_runs = self._load_table("analysis_runs").filter(pl.col("run_id") == run_id)
         collection_runs = self._load_table("collection_runs").filter(pl.col("run_id") == run_id)
+        cascade_metrics = self._load_table("cascade_metrics").filter(pl.col("run_id") == run_id)
 
         clusters, memberships = self._apply_narrative_overrides(clusters, memberships)
         stance_labels = self._apply_stance_overrides(stance_labels)
@@ -358,6 +359,9 @@ class ReportService:
             "propagation_coverage_gaps": self._rows_to_frame(propagation_coverage_gaps),
             "reply_depth_summary": self._rows_to_frame(reply_depth_summary),
             "top_propagated_items": self._rows_to_frame(top_propagated_items),
+            "cascade_metrics": cascade_metrics.sort("node_count", descending=True)
+            if not cascade_metrics.is_empty()
+            else self._load_table("cascade_metrics").head(0),
             "source_run_trace": self._rows_to_frame(source_run_trace),
             "source_warnings": self._rows_to_frame(source_warnings),
         }

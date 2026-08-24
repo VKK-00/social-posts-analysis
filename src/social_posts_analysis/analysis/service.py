@@ -11,6 +11,7 @@ from social_posts_analysis.paths import ProjectPaths
 from social_posts_analysis.propagation import filter_origin_posts_frame
 
 from .cache import AnalysisCacheStore
+from .cascades import CASCADE_METRICS_SCHEMA, compute_cascade_metrics
 from .clustering import NarrativeClusterer
 from .language import LanguageDetector
 from .metrics import compute_support_metrics
@@ -25,6 +26,7 @@ class AnalysisService:
         "narrative_clusters": ["run_id", "item_type", "cluster_id"],
         "stance_labels": ["run_id", "item_type", "item_id", "side_id"],
         "support_metrics": ["run_id", "scope_type", "scope_id", "side_id"],
+        "cascade_metrics": ["run_id", "cascade_type", "scope_id"],
     }
     ANALYSIS_SCHEMAS = {
         "analysis_runs": {
@@ -81,6 +83,7 @@ class AnalysisService:
             "net_support": pl.Int64,
             "run_id": pl.String,
         },
+        "cascade_metrics": CASCADE_METRICS_SCHEMA,
     }
 
     def __init__(self, config: ProjectConfig, paths: ProjectPaths) -> None:
@@ -196,6 +199,10 @@ class AnalysisService:
             resolved_run_id,
         )
 
+        comment_edges = self._load_table("comment_edges").filter(pl.col("run_id") == resolved_run_id)
+        propagation_edges = self._load_table("propagation_edges").filter(pl.col("run_id") == resolved_run_id)
+        cascade_metrics = compute_cascade_metrics(comment_edges, propagation_edges, resolved_run_id)
+
         analysis_run = [
             {
                 "run_id": resolved_run_id,
@@ -222,6 +229,10 @@ class AnalysisService:
             "support_metrics": self._persist_table(
                 "support_metrics",
                 support_metrics.to_dicts() if not support_metrics.is_empty() else [],
+            ),
+            "cascade_metrics": self._persist_table(
+                "cascade_metrics",
+                cascade_metrics.to_dicts() if not cascade_metrics.is_empty() else [],
             ),
         }
         self._sync_duckdb(outputs)

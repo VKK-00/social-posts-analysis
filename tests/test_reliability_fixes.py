@@ -703,3 +703,105 @@ def test_matching_normalized_run_is_order_insensitive(project_config, project_pa
     assert service._has_matching_normalized_run("r1", ["a-run", "b-run"]) is True
     assert service._has_matching_normalized_run("r1", ["b-run", "a-run"]) is True
     assert service._has_matching_normalized_run("r1", ["a-run", "c-run"]) is False
+
+
+# ---------------------------------------------------------------------------
+# 14. Cascade shape metrics (analysis/cascades.py)
+# ---------------------------------------------------------------------------
+
+
+def test_structural_virality_known_values() -> None:
+    from social_posts_analysis.analysis.cascades import structural_virality
+
+    # Star with root + 3 leaves: distances are 6x1 (root-leaf) and 6x2 (leaf-leaf).
+    star = structural_virality(
+        nodes=["o", "l1", "l2", "l3"],
+        children={"o": ["l1", "l2", "l3"]},
+    )
+    expected_star = (3 * 1 * 2 + 3 * 2 * 2) / (4 * 3)
+    assert abs(star - expected_star) < 1e-9
+
+    # Chain o -> a -> b: ordered pairwise distances 1+2+1+1+2+1 = 8 over 6 pairs.
+    chain = structural_virality(nodes=["o", "a", "b"], children={"o": ["a"], "a": ["b"]})
+    assert abs(chain - 8 / 6) < 1e-9
+
+
+def test_comment_cascade_metrics_for_nested_thread() -> None:
+    from social_posts_analysis.analysis.cascades import compute_cascade_metrics
+
+    edges = pl.DataFrame(
+        {
+            "comment_id": ["t1", "t2", "t1-r1", "t1-r1-r2"],
+            "parent_post_id": ["post-1"] * 4,
+            "parent_comment_id": [None, None, "t1", "t1-r1"],
+            "depth": [0, 0, 1, 2],
+            "run_id": ["run-x"] * 4,
+        }
+    )
+    result = compute_cascade_metrics(edges, pl.DataFrame(), "run-x")
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["cascade_type"] == "comment_tree"
+    assert row["scope_id"] == "post-1"
+    assert row["node_count"] == 4
+    # origin -> t1 -> t1-r1 -> t1-r1-r2
+    assert row["max_depth"] == 3
+    # Level 1 under the origin holds both top-level comments.
+    assert row["max_breadth"] == 2
+    assert row["structural_virality"] is not None
+    assert row["run_id"] == "run-x"
+
+
+def test_propagation_cascade_metrics_star() -> None:
+    from social_posts_analysis.analysis.cascades import compute_cascade_metrics
+
+    edges = pl.DataFrame(
+        {
+            "propagation_id": ["s1", "s2", "s3"],
+            "origin_post_id": ["post-9"] * 3,
+            "propagation_kind": ["share"] * 3,
+            "platform": ["facebook"] * 3,
+            "run_id": ["run-y"] * 3,
+        }
+    )
+    result = compute_cascade_metrics(pl.DataFrame(), edges, "run-y")
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["cascade_type"] == "propagation_tree"
+    assert row["scope_id"] == "post-9"
+    assert row["node_count"] == 3
+    assert row["max_depth"] == 1
+    assert row["max_breadth"] == 3
+    # A pure share-star has the virality of a 4-node star.
+    expected = (3 * 1 * 2 + 3 * 2 * 2) / (4 * 3)
+    assert abs(row["structural_virality"] - expected) < 1e-9
+
+
+def test_cascade_metrics_empty_inputs_yield_empty_typed_frame() -> None:
+    from social_posts_analysis.analysis.cascades import compute_cascade_metrics
+
+    result = compute_cascade_metrics(pl.DataFrame(), pl.DataFrame(), "run-z")
+    assert result.is_empty()
+    assert "node_count" in result.columns
+    assert "structural_virality" in result.columns
+
+
+def test_single_comment_tree_has_minimal_virality() -> None:
+    from social_posts_analysis.analysis.cascades import compute_cascade_metrics
+
+    edges = pl.DataFrame(
+        {
+            "comment_id": ["only"],
+            "parent_post_id": ["p"],
+            "parent_comment_id": [None],
+            "depth": [0],
+            "run_id": ["r"],
+        }
+    )
+    row = compute_cascade_metrics(edges, pl.DataFrame(), "r").row(0, named=True)
+    assert row["node_count"] == 1
+    assert row["max_depth"] == 1
+    # origin <-> single comment: the smallest meaningful cascade.
+    assert row["structural_virality"] == 1.0

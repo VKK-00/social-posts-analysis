@@ -478,6 +478,7 @@ Analysis tables:
 - `narrative_clusters.parquet`
 - `stance_labels.parquet`
 - `support_metrics.parquet`
+- `cascade_metrics.parquet`
 - `analysis_runs.parquet`
 
 Review files:
@@ -523,6 +524,15 @@ These files or directories should stay local and should not be committed:
 Wilson score interval around the support share among decided comments
 (`support + oppose + neutral`; `unclear` is excluded by design). Use these
 bounds instead of the raw ratio when comparing scopes with few comments.
+
+### Cascade shape metrics
+
+`cascade_metrics` describes every discussion tree (per origin post) and
+propagation star (per origin): `node_count`, `max_depth`, `max_breadth`, and
+`structural_virality` — the mean pairwise shortest-path distance across the
+cascade including the root (Goel et al., 2015). Virality is `None` for
+cascades smaller than two nodes or above the 2000-node computation cap. The
+table is also exported as `report_<run_id>_tables/cascade_metrics.csv`.
 
 ### Author pseudonymization
 
