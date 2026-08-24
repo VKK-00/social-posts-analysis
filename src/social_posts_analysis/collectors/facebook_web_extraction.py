@@ -12,73 +12,105 @@ from .facebook_web_content import (
 )
 from .facebook_web_timestamps import extract_numeric_media_id
 
+# ---------------------------------------------------------------------------
+# Selector packs.
+#
+# These are the DOM hooks the Facebook web scrapers rely on. They live here
+# (not inline in the evaluate() scripts) so a Facebook redesign means
+# updating one documented place instead of hunting through JS strings.
+# Legacy class-based selectors (_5pcr, data-utime, ...) are known to break
+# on UI rollouts; the role/href-based ones are more stable.
+# ---------------------------------------------------------------------------
+
+PERMALINK_LINK_SELECTOR = (
+    'a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="], a[href*="/videos/"], a[href*="/reel/"]'
+)
+DETAIL_PERMALINK_LINK_SELECTOR = (
+    'a[href*="/posts/"]:not([href*="comment_id="]), a[href*="/videos/"], a[href*="/reel/"], a[href*="story_fbid="]'
+)
+ARTICLE_SELECTOR = 'div[role="article"], article'
+LEGACY_POST_WRAPPER_SELECTOR = "div._5pcr.userContentWrapper"
+LEGACY_METRIC_NODE_SELECTOR = ".embeddedLikeButton, a._29bd div, [title]"
+LEGACY_TIMESTAMP_NODE_SELECTOR = "abbr[data-utime]"
+LEGACY_AUTHOR_NAME_SELECTOR = "._50f7, .fwb a, .fwb span"
+POST_MESSAGE_SELECTOR = '[data-testid="post_message"]'
+
 
 def extract_feed_candidates(page: Any) -> list[dict[str, Any]]:
     script = """
-    () => {
-      const articles = Array.from(document.querySelectorAll('div[role="article"], article'));
-      return articles.map((article) => {
-        const statusLinks = Array.from(article.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="], a[href*="/videos/"], a[href*="/reel/"]'))
-          .map((node) => node.href || '')
-          .filter(Boolean)
-          .filter((value, index, rows) => rows.indexOf(value) === index);
-        const permalinkNode = article.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="], a[href*="/videos/"], a[href*="/reel/"]');
-        return {
-          permalink: statusLinks[0] || permalinkNode?.href || null,
-          shared_permalink: statusLinks.find((href) => href !== (statusLinks[0] || permalinkNode?.href || '')) || null,
-          published_hint: (permalinkNode?.innerText || '').trim(),
-          text: (article.innerText || '').trim(),
-          reactions_text: '',
-          comments_text: '',
-          shares_text: ''
-        };
-      }).filter(item => item.permalink && item.text);
-    }
-    """
+        () => {
+          const articles = Array.from(document.querySelectorAll('__ARTICLE_SELECTOR__'));
+          return articles.map((article) => {
+            const statusLinks = Array.from(article.querySelectorAll('__PERMALINK_LINK_SELECTOR__'))
+              .map((node) => node.href || '')
+              .filter(Boolean)
+              .filter((value, index, rows) => rows.indexOf(value) === index);
+            const permalinkNode = article.querySelector('__PERMALINK_LINK_SELECTOR__');
+            return {
+              permalink: statusLinks[0] || permalinkNode?.href || null,
+              shared_permalink: statusLinks.find((href) => href !== (statusLinks[0] || permalinkNode?.href || '')) || null,
+              published_hint: (permalinkNode?.innerText || '').trim(),
+              text: (article.innerText || '').trim(),
+              reactions_text: '',
+              comments_text: '',
+              shares_text: ''
+            };
+          }).filter(item => item.permalink && item.text);
+        }
+        """.replace("__ARTICLE_SELECTOR__", ARTICLE_SELECTOR).replace(
+        "__PERMALINK_LINK_SELECTOR__", PERMALINK_LINK_SELECTOR
+    )
     return page.evaluate(script)
 
 
 def extract_plugin_feed_candidates(page: Any) -> list[dict[str, Any]]:
-    script = """
-    () => {
-      const wrappers = Array.from(document.querySelectorAll('div._5pcr.userContentWrapper'));
-      const metricValue = (wrapper, title) => {
-        const metricNodes = Array.from(wrapper.querySelectorAll('.embeddedLikeButton, a._29bd div, [title]'));
-        const match = metricNodes.find((node) => {
-          const value = (node.getAttribute('title') || node.innerText || '').trim().toLowerCase();
-          return value.includes(title);
-        });
-        return (match?.innerText || '').trim();
-      };
-      return wrappers.map((wrapper) => {
-        const timestampNode = wrapper.querySelector('abbr[data-utime]');
-        const statusLinks = Array.from(wrapper.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="], a[href*="/videos/"], a[href*="/reel/"]'))
-          .map((node) => node.href || '')
-          .filter(Boolean)
-          .filter((value, index, rows) => rows.indexOf(value) === index);
-        const timestampLink =
-          timestampNode?.closest('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="], a[href*="/videos/"], a[href*="/reel/"]') ||
-          wrapper.querySelector('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid="], a[href*="/videos/"], a[href*="/reel/"]');
-        const messageNodes = Array.from(wrapper.querySelectorAll('[data-testid="post_message"]'));
-        const primaryMessage = (messageNodes[0]?.innerText || '').trim();
-        const allMessages = messageNodes
-          .map((node) => (node.innerText || '').trim())
-          .filter(Boolean)
-          .join('\\n\\n');
-        return {
-          permalink: statusLinks[0] || timestampLink?.href || null,
-          shared_permalink: statusLinks.find((href) => href !== (statusLinks[0] || timestampLink?.href || '')) || null,
-          published_hint: (timestampNode?.innerText || '').trim(),
-          published_at: timestampNode?.dataset?.utime ? new Date(Number(timestampNode.dataset.utime) * 1000).toISOString() : null,
-          text: primaryMessage || allMessages,
-          author_name: (wrapper.querySelector('._50f7, .fwb a, .fwb span')?.innerText || '').trim() || null,
-          reactions_text: metricValue(wrapper, 'like'),
-          comments_text: metricValue(wrapper, 'comment'),
-          shares_text: metricValue(wrapper, 'share'),
-        };
-      }).filter(item => item.permalink && item.text);
-    }
-    """
+    script = (
+        """
+        () => {
+          const wrappers = Array.from(document.querySelectorAll('__LEGACY_POST_WRAPPER_SELECTOR__'));
+          const metricValue = (wrapper, title) => {
+            const metricNodes = Array.from(wrapper.querySelectorAll('__LEGACY_METRIC_NODE_SELECTOR__'));
+            const match = metricNodes.find((node) => {
+              const value = (node.getAttribute('title') || node.innerText || '').trim().toLowerCase();
+              return value.includes(title);
+            });
+            return (match?.innerText || '').trim();
+          };
+          return wrappers.map((wrapper) => {
+            const timestampNode = wrapper.querySelector('__LEGACY_TIMESTAMP_NODE_SELECTOR__');
+            const statusLinks = Array.from(wrapper.querySelectorAll('__PERMALINK_LINK_SELECTOR__'))
+              .map((node) => node.href || '')
+              .filter(Boolean)
+              .filter((value, index, rows) => rows.indexOf(value) === index);
+            const timestampLink =
+              timestampNode?.closest('__PERMALINK_LINK_SELECTOR__') ||
+              wrapper.querySelector('__PERMALINK_LINK_SELECTOR__');
+            const messageNodes = Array.from(wrapper.querySelectorAll('__POST_MESSAGE_SELECTOR__'));
+            const primaryMessage = (messageNodes[0]?.innerText || '').trim();
+            const allMessages = messageNodes
+              .map((node) => (node.innerText || '').trim())
+              .filter(Boolean)
+              .join('\\n\\n');
+            return {
+              permalink: statusLinks[0] || timestampLink?.href || null,
+              shared_permalink: statusLinks.find((href) => href !== (statusLinks[0] || timestampLink?.href || '')) || null,
+              published_hint: (timestampNode?.innerText || '').trim(),
+              published_at: timestampNode?.dataset?.utime ? new Date(Number(timestampNode.dataset.utime) * 1000).toISOString() : null,
+              text: primaryMessage || allMessages,
+              author_name: (wrapper.querySelector('__LEGACY_AUTHOR_NAME_SELECTOR__')?.innerText || '').trim() || null,
+              reactions_text: metricValue(wrapper, 'like'),
+              comments_text: metricValue(wrapper, 'comment'),
+              shares_text: metricValue(wrapper, 'share'),
+            };
+          }).filter(item => item.permalink && item.text);
+        }
+        """.replace("__LEGACY_POST_WRAPPER_SELECTOR__", LEGACY_POST_WRAPPER_SELECTOR)
+        .replace("__LEGACY_METRIC_NODE_SELECTOR__", LEGACY_METRIC_NODE_SELECTOR)
+        .replace("__LEGACY_TIMESTAMP_NODE_SELECTOR__", LEGACY_TIMESTAMP_NODE_SELECTOR)
+        .replace("__PERMALINK_LINK_SELECTOR__", PERMALINK_LINK_SELECTOR)
+        .replace("__POST_MESSAGE_SELECTOR__", POST_MESSAGE_SELECTOR)
+        .replace("__LEGACY_AUTHOR_NAME_SELECTOR__", LEGACY_AUTHOR_NAME_SELECTOR)
+    )
     return page.evaluate(script)
 
 
@@ -310,18 +342,18 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
           .filter((comment) => comment && comment.text && (comment.author_name || comment.permalink || comment.published_hint))
           .slice(0, commentLimit * 2);
       };
-      const articles = Array.from(document.querySelectorAll('div[role="article"], article'));
+      const articles = Array.from(document.querySelectorAll('__ARTICLE_SELECTOR__'));
       const firstArticle = articles[0] || null;
       const timestampNode = firstArticle?.querySelector('abbr[data-utime], span.timestampContent');
       const statusLinks = Array.from(
-        firstArticle?.querySelectorAll('a[href*="/posts/"]:not([href*="comment_id="]), a[href*="/videos/"], a[href*="/reel/"], a[href*="story_fbid="]') || []
+        firstArticle?.querySelectorAll('__DETAIL_PERMALINK_LINK_SELECTOR__') || []
       )
         .map((node) => node.href || '')
         .filter(Boolean)
         .filter((value, index, rows) => rows.indexOf(value) === index);
       const permalinkNode =
-        firstArticle?.querySelector('a[href*="/posts/"]:not([href*="comment_id="]), a[href*="/videos/"], a[href*="/reel/"], a[href*="story_fbid="]') ||
-        document.querySelector('a[href*="/posts/"]:not([href*="comment_id="]), a[href*="/videos/"], a[href*="/reel/"], a[href*="story_fbid="]');
+        firstArticle?.querySelector('__DETAIL_PERMALINK_LINK_SELECTOR__') ||
+        document.querySelector('__DETAIL_PERMALINK_LINK_SELECTOR__');
       const getMeta = (property) => document.querySelector(`meta[property="${property}"]`)?.content || null;
       const comments = articles
         .slice(1)
@@ -348,6 +380,8 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
     """
     script = script.replace("__AUTHOR_CONTROL_TERMS__", author_control_terms)
     script = script.replace("__AUTHOR_TIME_PATTERNS__", author_time_patterns)
+    script = script.replace("__ARTICLE_SELECTOR__", ARTICLE_SELECTOR)
+    script = script.replace("__DETAIL_PERMALINK_LINK_SELECTOR__", DETAIL_PERMALINK_LINK_SELECTOR)
     return page.evaluate(script, comment_limit)
 
 

@@ -966,3 +966,27 @@ def test_append_unique_deduplicates_with_last_wins(tmp_path: Path) -> None:
     # The newer row wins the key collision.
     assert result.row(0, named=True)["value"] == 2
     assert result.row(1, named=True)["item_id"] == "b"
+
+
+def test_extraction_scripts_have_no_unresolved_selector_placeholders() -> None:
+    """Selector packs must be fully injected into evaluate() scripts."""
+    from social_posts_analysis.collectors import facebook_web_extraction as extraction
+
+    captured_scripts: list[str] = []
+
+    class ScriptCapturePage:
+        def evaluate(self, script, *args):  # noqa: ANN001, ANN002
+            captured_scripts.append(script)
+            return []
+
+    page = ScriptCapturePage()
+    extraction.extract_feed_candidates(page)
+    extraction.extract_plugin_feed_candidates(page)
+
+    assert len(captured_scripts) == 2
+    for script in captured_scripts:
+        # No leftover __TOKEN__ placeholders may reach the browser.
+        placeholders = [line.strip() for line in script.splitlines() if "__" in line]
+        assert placeholders == []
+        # The permalink hook is the backbone of every feed extraction.
+        assert 'a[href*="/posts/"]' in script
