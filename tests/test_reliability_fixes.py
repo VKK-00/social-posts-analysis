@@ -990,3 +990,89 @@ def test_extraction_scripts_have_no_unresolved_selector_placeholders() -> None:
         assert placeholders == []
         # The permalink hook is the backbone of every feed extraction.
         assert 'a[href*="/posts/"]' in script
+
+
+# ---------------------------------------------------------------------------
+# 17. c-TF-IDF cluster keywords (analysis/clustering.py)
+# ---------------------------------------------------------------------------
+
+
+def test_ctfidf_ranks_discriminative_terms_first() -> None:
+    from social_posts_analysis.analysis.clustering import cluster_keywords
+
+    drone_texts = [
+        "дрони удари по складах дрони дрони фронтом дрони логістика",
+        "дрони нічні атаки дрони дрони розвідка дрони дрони",
+    ]
+    election_texts = [
+        "вибори дільниці комісії вибори вибори явка вибори виборці",
+        "вибори дебати кандидати вибори вибори протокол вибори",
+    ]
+    keywords = cluster_keywords({"drone": drone_texts, "election": election_texts})
+
+    assert keywords["drone"][0] == "дрони"
+    assert keywords["election"][0] == "вибори"
+    # Shared glue vocabulary must not outrank the discriminative terms.
+    assert "фронтом" not in keywords["election"]
+
+
+def test_ctfidf_excludes_multilingual_stopwords() -> None:
+    from social_posts_analysis.analysis.clustering import STOPWORDS, _tokenize, cluster_keywords
+
+    texts = ["the and для це що very specific terminology appears here"]
+    tokens = _tokenize(texts[0])
+    assert "specific" in tokens
+    for stopword in ("the", "and", "для", "це", "що"):
+        assert stopword not in tokens
+        assert stopword in STOPWORDS
+
+    result = cluster_keywords({"only": texts})
+    assert "specific" in result["only"] or "terminology" in result["only"]
+
+
+def test_ctfidf_single_cluster_reduces_to_term_frequency() -> None:
+    from social_posts_analysis.analysis.clustering import cluster_keywords
+
+    keywords = cluster_keywords(
+        {
+            "solo": [
+                "гуманітарна допомога гуманітарна допомога гуманітарна допомога",
+                "інші слова тут зовсім інші",
+            ]
+        }
+    )
+    # With a single cluster idf is constant, so ranking equals raw frequency.
+    assert keywords["solo"][0] == "гуманітарна"
+
+
+def test_narrative_clusterer_uses_ctfidf_keywords() -> None:
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from social_posts_analysis.analysis.clustering import NarrativeClusterer
+
+    llm = SimpleNamespace(
+        summarize_cluster=lambda item_type, keywords, texts: {"label": keywords[0], "description": ""}
+    )
+    clusterer = NarrativeClusterer(llm_provider=llm, exemplar_count=1, min_cluster_size=2, min_samples=1)
+
+    # Two tight groups far apart -> HDBSCAN separates them.
+    items = [
+        {"item_id": "d1", "item_type": "post", "text": "дрони удари дрони склади дрони"},
+        {"item_id": "d2", "item_type": "post", "text": "дрони нічні дрони розвідка дрони"},
+        {"item_id": "e1", "item_type": "post", "text": "вибори дільниці вибори комісії вибори"},
+        {"item_id": "e2", "item_type": "post", "text": "вибори явка вибори кандидати вибори"},
+    ]
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.9, 0.05],
+            [0.0, 1.0],
+            [0.05, 0.9],
+        ]
+    )
+
+    summaries, _memberships = clusterer.cluster_items("post", items, embeddings, "run-ctf")
+    labels = {summary["label"] for summary in summaries}
+    assert labels == {"дрони", "вибори"}

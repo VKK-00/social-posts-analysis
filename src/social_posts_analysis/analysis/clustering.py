@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -8,27 +9,176 @@ import numpy as np
 
 from .providers import LLMProvider
 
-STOPWORDS = {
-    "the",
-    "and",
-    "that",
-    "with",
-    "this",
-    "from",
-    "\u0434\u043b\u044f",
-    "\u044d\u0442\u043e",
-    "\u043a\u0430\u043a",
-    "\u0447\u0442\u043e",
-    "\u0430\u043b\u0435",
-    "\u043f\u0440\u043e",
-    "\u0435\u0441\u043b\u0438",
-    "they",
-    "have",
-}
+# Multilingual function words for ru/uk/en that must never surface as cluster
+# keywords. The c-TF-IDF weighting below already downweights terms shared
+# across clusters; this list removes the residual glue vocabulary.
+STOPWORDS = frozenset(
+    {
+        # English
+        "the",
+        "and",
+        "that",
+        "with",
+        "this",
+        "from",
+        "they",
+        "have",
+        "was",
+        "were",
+        "are",
+        "for",
+        "not",
+        "but",
+        "all",
+        "his",
+        "her",
+        "their",
+        "about",
+        "into",
+        "over",
+        "after",
+        "under",
+        "between",
+        "will",
+        "would",
+        "there",
+        "than",
+        "then",
+        "when",
+        "what",
+        "which",
+        "who",
+        "how",
+        "why",
+        "you",
+        "your",
+        "our",
+        "out",
+        "more",
+        "also",
+        "just",
+        "being",
+        # Ukrainian
+        "для",
+        "який",
+        "яка",
+        "які",
+        "це",
+        "цього",
+        "цієї",
+        "цей",
+        "ця",
+        "ще",
+        "після",
+        "також",
+        "тому",
+        "про",
+        "але",
+        "або",
+        "якщо",
+        "коли",
+        "був",
+        "була",
+        "було",
+        "були",
+        "буде",
+        "всі",
+        "всіх",
+        "його",
+        "її",
+        "їх",
+        "щоб",
+        "що",
+        "того",
+        "теж",
+        "дуже",
+        "свої",
+        "свою",
+        "ними",
+        "нам",
+        "нас",
+        "вас",
+        "може",
+        "можна",
+        "тільки",
+        "понад",
+        "між",
+        "під",
+        "над",
+        "без",
+        "мали",
+        "має",
+        # Russian
+        "это",
+        "как",
+        "что",
+        "чтобы",
+        "которые",
+        "который",
+        "которая",
+        "было",
+        "были",
+        "будет",
+        "после",
+        "также",
+        "потому",
+        "если",
+        "когда",
+        "все",
+        "всех",
+        "его",
+        "её",
+        "их",
+        "очень",
+        "можно",
+        "нужно",
+        "только",
+        "более",
+        "менее",
+        "между",
+        "под",
+        "свои",
+        "них",
+        "есть",
+    }
+)
+
+_KEYWORD_COUNT = 8
 
 
 def _tokenize(text: str) -> list[str]:
     return [token for token in re.findall(r"[\w']+", text.lower()) if len(token) > 2 and token not in STOPWORDS]
+
+
+def cluster_keywords(grouped_texts: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Class-based TF-IDF keywords per cluster (the c-TF-IDF idea from BERTopic).
+
+    All texts of one cluster are treated as a single document:
+    ``tf`` is the term count inside the cluster document and
+    ``idf = ln(1 + avg_document_length / term_frequency_across_all_documents)``
+    downweights vocabulary shared by many clusters, so discriminative terms
+    outrank generic ones even when they are frequent overall.
+    """
+    counters = {
+        cluster_id: Counter(token for text in texts for token in _tokenize(text))
+        for cluster_id, texts in grouped_texts.items()
+    }
+    total_tokens = {cid: sum(counter.values()) for cid, counter in counters.items()}
+    average_length = (sum(total_tokens.values()) / len(counters)) if counters else 0.0
+
+    global_frequency: Counter[str] = Counter()
+    for counter in counters.values():
+        global_frequency.update(counter.keys())
+
+    result: dict[str, list[str]] = {}
+    for cluster_id, counter in counters.items():
+        scores: dict[str, float] = {}
+        for term, tf in counter.items():
+            idf = math.log(1 + average_length / global_frequency[term]) if global_frequency[term] else 0.0
+            scores[term] = tf * idf
+        ranked = sorted(scores.items(), key=lambda entry: (-entry[1], entry[0]))
+        result[cluster_id] = [term for term, _ in ranked[:_KEYWORD_COUNT]]
+    return result
 
 
 class NarrativeClusterer:
@@ -67,8 +217,11 @@ class NarrativeClusterer:
             grouped.setdefault(cluster_key, []).append(item)
 
         summaries: list[dict[str, Any]] = []
+        keywords_by_cluster = cluster_keywords(
+            {cluster_id: [member["text"] for member in members] for cluster_id, members in grouped.items()}
+        )
         for cluster_id, members in grouped.items():
-            keywords = self._keywords(members)
+            keywords = keywords_by_cluster.get(cluster_id, [])
             sorted_members = sorted(members, key=lambda entry: len(entry["text"]), reverse=True)
             exemplars = [item["item_id"] for item in sorted_members[: self.exemplar_count]]
             llm_summary = self.llm_provider.summarize_cluster(
@@ -107,10 +260,3 @@ class NarrativeClusterer:
             return list(map(int, labels))
         except Exception:
             return [0] * len(embeddings)
-
-    @staticmethod
-    def _keywords(members: list[dict[str, Any]]) -> list[str]:
-        counter: Counter[str] = Counter()
-        for member in members:
-            counter.update(_tokenize(member["text"]))
-        return [token for token, _ in counter.most_common(8)]
